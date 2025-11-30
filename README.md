@@ -19,5 +19,5 @@ pip install -r requirements.txt
 
 ```bash
 cd brain
-python .\main.py
+python ./main.py
 ```
