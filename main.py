@@ -829,22 +829,28 @@ class BrainInterface:
         if context and self.chat.verbose:
             print(f"\n{Colors.CYAN}{context}{Colors.RESET}")
         
-        # Step 2: Build enhanced prompt with context
-        if context:
-            enhanced_prompt = f"{context}\n\nUser: {user_prompt}"
-        else:
-            enhanced_prompt = user_prompt
-        
-        # Add to conversation history manually (we'll handle the chat differently)
+        # Step 2: Add the RAW user message to conversation history
+        # This preserves clean conversation flow for future context
         self.chat.conversation_history.append({
             "role": "user",
-            "content": enhanced_prompt
+            "content": user_prompt
         })
         
-        # Build request payload
+        # Step 3: Build messages for THIS request only, with context injected
+        # We copy history and modify the LAST user message to include context
+        messages_for_request = self.chat.conversation_history.copy()
+        if context:
+            # Inject context into the current message only (not stored in history)
+            enhanced_prompt = f"{context}\n\nUser: {user_prompt}"
+            messages_for_request[-1] = {
+                "role": "user",
+                "content": enhanced_prompt
+            }
+        
+        # Build request payload with enhanced messages (but history stays clean)
         payload = {
             "model": self.chat.model,
-            "messages": self.chat.conversation_history,
+            "messages": messages_for_request,
             "stream": stream,
             "options": self.chat._build_options(),
             "think": True
