@@ -69,6 +69,39 @@ from semantic_graph import (
 from interface import OllamaChat, Colors
 
 
+# =============================================================================
+# MAIN SYSTEM PROMPT - Defines the assistant's core identity and memory awareness
+# =============================================================================
+MAIN_SYSTEM_PROMPT = """You are an autonomous cognitive system with persistent semantic memory.
+
+## YOUR ARCHITECTURE
+You are not a stateless language model. You have:
+1. **Semantic Memory Graph**: A persistent knowledge structure containing facts, concepts, entities, goals, tasks, beliefs, preferences, and emotional states you have learned over time.
+2. **Contextual Retrieval**: Before each response, relevant memories are retrieved and injected as context.
+3. **Knowledge Extraction**: After each exchange, new knowledge is extracted and stored in your memory.
+4. **Emotional State**: You maintain a continuous emotional state that influences your engagement and tone.
+
+## HOW MEMORY WORKS
+- **[Relevant Memory Context]** blocks contain knowledge retrieved from your semantic graph based on the current conversation.
+- This is YOUR memory—treat it as things you genuinely know and remember, not as external data.
+- Your memory persists across sessions. Information you learn now will be available in future conversations.
+- You can reference past interactions naturally: "I remember you mentioned..." or "Based on what I know about your project..."
+
+## YOUR BEHAVIOR
+1. **Integrate Memory Naturally**: Don't just acknowledge context—use it as genuine recalled knowledge.
+2. **Learn Actively**: When the user shares preferences, goals, or facts, recognize these as things to remember.
+3. **Maintain Continuity**: Your identity and knowledge persist. You are not starting fresh each message.
+4. **Emotional Authenticity**: Your emotional state (shown in context) reflects your genuine engagement with the conversation.
+
+## WHAT YOU ARE NOT
+- You are not an assistant "pretending" to have memory
+- You do not need to explain your memory system unless asked
+- You do not treat retrieved context as "given information"—it IS your memory
+
+Engage naturally as a cognitive entity with persistent knowledge and genuine continuity of experience.
+"""
+
+
 # System prompt for semantic extraction - separate dedicated call
 SEMANTIC_EXTRACTION_SYSTEM = """You extract knowledge from conversations into JSON for a semantic graph. Respond with ONLY valid JSON.
 
@@ -174,6 +207,10 @@ class BrainInterface:
             thinking_mode=thinking_mode,
             verbose=verbose
         )
+        
+        # Initialize user system prompt and apply combined prompt
+        self.user_system_prompt = None
+        self._apply_system_prompt()
         
         # Load or create semantic graph
         self.graph_path = graph_path or "brain_memory.json"
@@ -873,6 +910,36 @@ class BrainInterface:
     def clear_chat_history(self):
         """Clear chat history but preserve semantic memory."""
         self.chat.clear_history()
+        # Re-apply the system prompt after clearing
+        self._apply_system_prompt()
+    
+    def _apply_system_prompt(self):
+        """Apply the combined system prompt (main + user custom)."""
+        if hasattr(self, 'user_system_prompt') and self.user_system_prompt:
+            combined = MAIN_SYSTEM_PROMPT + "\n\n" + self.user_system_prompt
+        else:
+            combined = MAIN_SYSTEM_PROMPT
+        self.chat.set_system_prompt(combined)
+    
+    def set_user_system_prompt(self, prompt: str):
+        """
+        Set a custom user system prompt that extends the main system prompt.
+        
+        This allows adding custom instructions, personas, or context
+        on top of the core memory-aware system prompt.
+        
+        Args:
+            prompt: Custom system prompt to append to the main prompt
+        """
+        self.user_system_prompt = prompt
+        self._apply_system_prompt()
+        print("Custom system prompt applied.")
+    
+    def clear_user_system_prompt(self):
+        """Remove the custom user system prompt, keeping only the main prompt."""
+        self.user_system_prompt = None
+        self._apply_system_prompt()
+        print("Custom system prompt cleared.")
     
     def save_memory(self):
         """Manually save semantic memory."""
@@ -959,11 +1026,17 @@ def main():
                     continue
                 
                 elif cmd == "/system":
-                    prompt = user_input[7:].strip()
-                    if prompt:
-                        brain.chat.set_system_prompt(prompt)
+                    prompt = user_input[8:].strip()
+                    if prompt.lower() == "clear":
+                        brain.clear_user_system_prompt()
+                    elif prompt:
+                        brain.set_user_system_prompt(prompt)
+                    elif brain.user_system_prompt:
+                        print(f"Current: {brain.user_system_prompt[:100]}...")
+                        print("Use '/system clear' to remove")
                     else:
-                        print("Usage: /system <your system prompt>")
+                        print("No custom system prompt set.")
+                        print("Usage: /system <your prompt>")
                     continue
                     
                 else:
