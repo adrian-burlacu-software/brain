@@ -9,6 +9,12 @@ Uses Ollama and the gpt-oss:20b model for now.
 - Emotional simulation
 - Self generating tools (incoming feature)
 
+## Installation
+
+```bash
+pip install -r requirements.txt
+```
+
 ## Usage
 
 ```bash
