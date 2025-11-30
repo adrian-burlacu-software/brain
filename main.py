@@ -98,15 +98,7 @@ Rules:
 7. "similar_to" means A and B are the same TYPE of thing with similar properties
 8. "about" means A directly discusses or references B
 9. Prefer fewer, high-quality relationships over many weak ones
-10. When in doubt, store LESS - the graph should contain high-value knowledge only"""
-
-SEMANTIC_EXTRACTION_TEMPLATE = """Extract knowledge from this exchange:
-
-USER: {user_prompt}
-ASSISTANT: {assistant_response}
-
-Assistant's previous emotional state: {emotional_state}
-Existing nodes: {existing_nodes}
+10. When in doubt, store LESS - the graph should contain high-value knowledge only
 
 BEFORE extracting, evaluate: Is this information worth storing long-term?
 - Is it about the user's preferences, projects, goals, or context? → Store it
@@ -133,7 +125,17 @@ Examples:
 Extract ONLY new, meaningful, RELEVANT knowledge. Be very conservative.
 
 Return JSON:
-{{"nodes": [{{"type": "fact|concept|entity|...", "label": "snake_case", "content": "brief description", "confidence": 0.8}}], "relationships": [{{"source_label": "label", "relation": "related_to|...", "target_label": "label", "confidence": 0.8}}], "updates": [{{"node_label": "current_emotion", "new_content": "<emotion> | intensity: <0.0-1.0> | valence: <pos/neg/neutral> | <reason>"}}]}}"""
+{{"nodes": [{{"type": "fact|concept|entity|...", "label": "snake_case", "content": "brief description", "confidence": 0.8}}], "relationships": [{{"source_label": "label", "relation": "related_to|...", "target_label": "label", "confidence": 0.8}}], "updates": [{{"node_label": "current_emotion", "new_content": "<emotion> | intensity: <0.0-1.0> | valence: <pos/neg/neutral> | <reason>"}}]}}
+"""
+
+SEMANTIC_EXTRACTION_TEMPLATE = """Extract knowledge from this exchange:
+
+USER: {user_prompt}
+ASSISTANT: {assistant_response}
+
+Assistant's previous emotional state: {emotional_state}
+Existing nodes: {existing_nodes}
+"""
 
 
 class BrainInterface:
