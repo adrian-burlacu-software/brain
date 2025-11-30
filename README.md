@@ -8,3 +8,10 @@ Uses Ollama and the gpt-oss:20b model for now.
 - Semantic updates to various knowledge
 - Emotional simulation
 - Self generating tools (incoming feature)
+
+## Usage
+
+```bash
+cd brain
+python .\main.py
+```
