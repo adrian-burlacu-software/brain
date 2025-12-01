@@ -47,8 +47,6 @@ cd brain
 python ./main.py
 ```
 
-If you get a 400 error from Ollama, the model doesn't support thinking and it should (for now).
-
 ### Examples
 
 System prompt for robotic simulation:
