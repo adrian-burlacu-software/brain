@@ -1,7 +1,7 @@
 # brain
 
 An LLM system enhanced with a semantic graph storage.
-Uses Ollama and the gpt-oss:20b model for now.
+Uses Ollama with any configured model.
 Vibe coded in my free time :D.
 
 ## Features
@@ -16,7 +16,29 @@ Vibe coded in my free time :D.
 pip install -r requirements.txt
 ```
 
-Install and run Ollama and pull the gpt-oss:20b model.
+Install and run Ollama and pull your preferred model (e.g., `ollama pull gpt-oss:20b`).
+
+## Configuration
+
+Edit `configuration.json` to customize the settings:
+
+```json
+{
+  "ollama": {
+    "model": "gpt-oss:20b",
+    "base_url": "http://localhost:11434"
+  },
+  "thinking_mode": "medium",
+  "verbose": false,
+  "auto_save": true
+}
+```
+
+- `ollama.model`: The Ollama model to use (default: `gpt-oss:20b`)
+- `ollama.base_url`: Ollama API URL (default: `http://localhost:11434`)
+- `thinking_mode`: Thinking budget - `low`, `medium`, or `high`
+- `verbose`: Show thinking process in real time
+- `auto_save`: Automatically save semantic memory after updates
 
 ## Usage
 
@@ -24,6 +46,8 @@ Install and run Ollama and pull the gpt-oss:20b model.
 cd brain
 python ./main.py
 ```
+
+If you get a 400 error from Ollama, the model doesn't support thinking and it should (for now).
 
 ### Examples
 

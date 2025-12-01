@@ -1,11 +1,40 @@
-"""
-Ollama Chat Interface for gpt-oss:20b model
-Supports conversation history and thinking modes
+"""Ollama Chat Interface with configurable model support.
+Supports conversation history and thinking modes.
 """
 
+import os
 import requests
 import json
-from typing import Generator
+from typing import Generator, Optional
+from pathlib import Path
+
+# Load configuration from configuration.json
+def _load_config() -> dict:
+    """Load configuration from configuration.json file."""
+    config_path = Path(__file__).parent / "configuration.json"
+    default_config = {
+        "ollama": {
+            "model": "gpt-oss:20b",
+            "base_url": "http://localhost:11434"
+        },
+        "thinking_mode": "medium",
+        "verbose": False,
+        "auto_save": True
+    }
+    
+    if config_path.exists():
+        try:
+            with open(config_path, "r") as f:
+                return json.load(f)
+        except (json.JSONDecodeError, IOError) as e:
+            print(f"Warning: Could not load configuration.json: {e}")
+            print("Using default configuration.")
+    
+    return default_config
+
+CONFIG = _load_config()
+DEFAULT_MODEL = CONFIG.get("ollama", {}).get("model", "gpt-oss:20b")
+DEFAULT_BASE_URL = CONFIG.get("ollama", {}).get("base_url", "http://localhost:11434")
 
 
 # ANSI color codes
@@ -24,25 +53,26 @@ class OllamaChat:
     
     def __init__(
         self,
-        model: str = "gpt-oss:20b",
-        base_url: str = "http://localhost:11434",
-        thinking_mode: str = "medium",
-        verbose: bool = False
+        model: Optional[str] = None,
+        base_url: Optional[str] = None,
+        thinking_mode: Optional[str] = None,
+        verbose: Optional[bool] = None
     ):
         """
         Initialize the Ollama chat interface.
         
         Args:
-            model: The Ollama model to use
-            base_url: Ollama API base URL
-            thinking_mode: Thinking budget - "low", "medium", or "high"
-            verbose: Show thinking process in real time
+            model: The Ollama model to use (defaults to configuration.json)
+            base_url: Ollama API base URL (defaults to configuration.json)
+            thinking_mode: Thinking budget - "low", "medium", or "high" (defaults to configuration.json)
+            verbose: Show thinking process in real time (defaults to configuration.json)
         """
-        self.model = model
-        self.base_url = base_url.rstrip("/")
+        self.model = model if model is not None else DEFAULT_MODEL
+        self.base_url = (base_url if base_url is not None else DEFAULT_BASE_URL).rstrip("/")
         self.conversation_history: list[dict] = []
-        self.thinking_mode = thinking_mode
-        self.verbose = verbose
+        self.thinking_mode = thinking_mode if thinking_mode is not None else CONFIG.get("thinking_mode", "medium")
+        self.verbose = verbose if verbose is not None else CONFIG.get("verbose", False)
+        self._supports_thinking: Optional[bool] = None  # Will be detected on first request
         
         # Thinking mode configurations (token budgets)
         self.thinking_budgets = {
@@ -86,8 +116,11 @@ class OllamaChat:
             "messages": self.conversation_history,
             "stream": stream,
             "options": self._build_options(),
-            "think": True  # Enable thinking mode
         }
+        
+        # Only add think parameter if model supports it (or we haven't checked yet)
+        if self._supports_thinking is not False:
+            payload["think"] = True
         
         url = f"{self.base_url}/api/chat"
         
@@ -95,6 +128,14 @@ class OllamaChat:
             return self._stream_response(url, payload)
         else:
             return self._get_response(url, payload)
+    
+    def _handle_thinking_not_supported(self, payload: dict) -> dict:
+        """Remove think parameter and mark model as not supporting thinking."""
+        self._supports_thinking = False
+        payload.pop("think", None)
+        if self.verbose:
+            print(f"Note: Model '{self.model}' does not support native thinking mode.")
+        return payload
     
     def _stream_response(self, url: str, payload: dict) -> Generator[str, None, None]:
         """Stream the response from Ollama."""
@@ -104,7 +145,23 @@ class OllamaChat:
         
         try:
             with requests.post(url, json=payload, stream=True) as response:
+                # Check for thinking not supported error
+                if response.status_code == 400:
+                    try:
+                        error_data = response.json()
+                        if "does not support thinking" in error_data.get("error", ""):
+                            # Retry without think parameter
+                            payload = self._handle_thinking_not_supported(payload)
+                            yield from self._stream_response(url, payload)
+                            return
+                    except json.JSONDecodeError:
+                        pass
+                
                 response.raise_for_status()
+                
+                # Mark as supporting thinking if we get here with think=True
+                if payload.get("think") and self._supports_thinking is None:
+                    self._supports_thinking = True
                 
                 for line in response.iter_lines():
                     if line:
@@ -160,7 +217,24 @@ class OllamaChat:
         """Get the complete response from Ollama."""
         try:
             response = requests.post(url, json=payload)
+            
+            # Check for thinking not supported error
+            if response.status_code == 400:
+                try:
+                    error_data = response.json()
+                    if "does not support thinking" in error_data.get("error", ""):
+                        # Retry without think parameter
+                        payload = self._handle_thinking_not_supported(payload)
+                        return self._get_response(url, payload)
+                except json.JSONDecodeError:
+                    pass
+            
             response.raise_for_status()
+            
+            # Mark as supporting thinking if we get here with think=True
+            if payload.get("think") and self._supports_thinking is None:
+                self._supports_thinking = True
+            
             data = response.json()
             
             assistant_message = data.get("message", {}).get("content", "")
@@ -227,7 +301,7 @@ class OllamaChat:
 def main():
     """Interactive chat interface."""
     print(f"{Colors.CYAN}{Colors.BOLD}" + "=" * 60)
-    print("Ollama Chat Interface - gpt-oss:20b")
+    print(f"Ollama Chat Interface - {DEFAULT_MODEL}")
     print("Thinking Mode: Medium")
     print("=" * 60 + f"{Colors.RESET}")
     print(f"\n{Colors.YELLOW}Commands:{Colors.RESET}")
@@ -240,7 +314,6 @@ def main():
     print(f"{Colors.CYAN}" + "=" * 60 + f"{Colors.RESET}")
     
     chat = OllamaChat(
-        model="gpt-oss:20b",
         thinking_mode="medium",
         verbose=False
     )

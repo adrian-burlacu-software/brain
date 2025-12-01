@@ -91,7 +91,7 @@ from semantic_graph import (
     SemanticGraph, NodeType, RelationType, 
     ConfidenceLevel, Node, Edge
 )
-from interface import OllamaChat, Colors
+from interface import OllamaChat, Colors, CONFIG, DEFAULT_MODEL, DEFAULT_BASE_URL
 
 
 # =============================================================================
@@ -824,22 +824,22 @@ class BrainInterface:
     def __init__(
         self,
         graph_path: Optional[str] = None,
-        model: str = "gpt-oss:20b",
-        base_url: str = "http://localhost:11434",
-        thinking_mode: str = "medium",
-        verbose: bool = False,
-        auto_save: bool = True
+        model: Optional[str] = None,
+        base_url: Optional[str] = None,
+        thinking_mode: Optional[str] = None,
+        verbose: Optional[bool] = None,
+        auto_save: Optional[bool] = None
     ):
         """
         Initialize the Brain Interface.
         
         Args:
             graph_path: Path to load/save semantic graph
-            model: Ollama model to use
-            base_url: Ollama API URL
-            thinking_mode: Thinking budget level
-            verbose: Show thinking process
-            auto_save: Auto-save graph after updates
+            model: Ollama model to use (defaults to configuration.json)
+            base_url: Ollama API URL (defaults to configuration.json)
+            thinking_mode: Thinking budget level (defaults to configuration.json)
+            verbose: Show thinking process (defaults to configuration.json)
+            auto_save: Auto-save graph after updates (defaults to configuration.json)
         """
         self.chat = OllamaChat(
             model=model,
@@ -847,6 +847,7 @@ class BrainInterface:
             thinking_mode=thinking_mode,
             verbose=verbose
         )
+        self.auto_save = auto_save if auto_save is not None else CONFIG.get("auto_save", True)
         
         # Initialize user system prompt and apply combined prompt
         self.user_system_prompt = None
@@ -868,10 +869,9 @@ class BrainInterface:
                 self.graph = SemanticGraph("brain_memory")
                 print(f"{Colors.CYAN}Created new semantic memory (no bootstrap found){Colors.RESET}")
         
-        self.auto_save = auto_save
-        
         # Initialize semantic search engine for embedding-based retrieval
-        self.search_engine = SemanticSearchEngine(self.graph, verbose=verbose)
+        _verbose = verbose if verbose is not None else CONFIG.get("verbose", False)
+        self.search_engine = SemanticSearchEngine(self.graph, verbose=_verbose)
         if self.search_engine.is_available():
             print(f"{Colors.CYAN}Semantic search enabled (embedding-based context retrieval){Colors.RESET}")
         else:
@@ -1340,22 +1340,22 @@ class BrainInterface:
         
         for attempt in range(max_retries):
             try:
+                request_payload = {
+                    "model": self.chat.model,
+                    "messages": [
+                        {"role": "system", "content": SEMANTIC_EXTRACTION_SYSTEM},
+                        {"role": "user", "content": extraction_prompt}
+                    ],
+                    "stream": False,
+                    "options": {
+                        "temperature": 0.1,  # Very low temp for structured output
+                        "num_predict": 2048,  # Reasonable limit for JSON output
+                    }
+                }
+                
                 response = requests.post(
                     f"{self.chat.base_url}/api/chat",
-                    json={
-                        "model": self.chat.model,
-                        "messages": [
-                            {"role": "system", "content": SEMANTIC_EXTRACTION_SYSTEM},
-                            {"role": "user", "content": extraction_prompt}
-                        ],
-                        "stream": False,
-                        "think": True,  # Enable thinking for better extraction
-                        "options": {
-                            "temperature": 0.1,  # Very low temp for structured output
-                            "num_predict": -1,  # Unlimited output tokens
-                            "thinking_budget": 8192,  # Medium-high thinking budget
-                        }
-                    },
+                    json=request_payload,
                     timeout=300  # 5 minute timeout
                 )
                 response.raise_for_status()
@@ -1389,11 +1389,6 @@ class BrainInterface:
         
         if not response_text:
             return {"nodes": [], "relationships": [], "updates": []}
-        
-        # Log raw response in verbose mode
-        if self.chat.verbose:
-            print(f"{Colors.DIM}[Extraction raw response]:{Colors.RESET}")
-            print(f"{Colors.DIM}{response_text}{Colors.RESET}")
         
         # Parse JSON from response
         try:
@@ -1439,10 +1434,8 @@ class BrainInterface:
             
         except json.JSONDecodeError as e:
             # Show error in verbose mode
-            if self.chat.verbose and response_text:
-                print(f"{Colors.DIM}(Could not parse extraction JSON: {e}){Colors.RESET}")
-                print(f"{Colors.DIM}Raw response ({len(response_text)} chars):{Colors.RESET}")
-                print(f"{Colors.DIM}{response_text}{Colors.RESET}")
+            if self.chat.verbose:
+                print(f"{Colors.DIM}(Could not parse extraction JSON){Colors.RESET}")
             return {"nodes": [], "relationships": [], "updates": [], "deactivations": []}
     
     def _apply_knowledge(self, knowledge: dict) -> int:
@@ -1818,11 +1811,7 @@ def main():
     print(f"{Colors.CYAN}" + "=" * 60 + f"{Colors.RESET}")
     
     brain = BrainInterface(
-        graph_path="brain_memory.json",
-        model="gpt-oss:20b",
-        thinking_mode="medium",
-        verbose=False,
-        auto_save=True
+        graph_path="brain_memory.json"
     )
     
     brain.show_memory_stats()
@@ -1898,8 +1887,10 @@ def main():
                     continue
             
             # Process through brain pipeline
+            # Use streaming on first request (to detect thinking support) or when thinking is supported
+            use_stream = brain.chat._supports_thinking is None or brain.chat._supports_thinking is True
             print(f"\n{Colors.BOLD}Assistant:{Colors.RESET} ", end="", flush=True)
-            for chunk in brain.process(user_input, stream=True):
+            for chunk in brain.process(user_input, stream=use_stream):
                 print(chunk, end="", flush=True)
             print()
             
