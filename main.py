@@ -95,6 +95,432 @@ from interface import OllamaChat, Colors
 
 
 # =============================================================================
+# EMOTION WHEEL - Position-based emotion mapping for averaging
+# =============================================================================
+
+class EmotionWheel:
+    """
+    Emotion wheel based on the 6-core emotion model.
+    
+    Emotions are mapped to positions on a 2D wheel where:
+    - Angle (0-360°) represents the emotion type
+    - Radius (0-1) represents intensity
+    - Neutral is at the center (radius = 0)
+    
+    Core emotions at 60° intervals:
+    - HAPPY: 0°
+    - POWERFUL: 60°  
+    - DISGUSTED: 120°
+    - ANGRY: 180°
+    - WORRIED: 240°
+    - SAD: 300°
+    """
+    
+    # Core emotions and their angles (degrees)
+    CORE_EMOTIONS = {
+        "happy": 0,
+        "powerful": 60,
+        "disgusted": 120,
+        "angry": 180,
+        "worried": 240,
+        "sad": 300,
+    }
+    
+    # Secondary emotions mapped to their parent core emotion + offset
+    # Format: emotion -> (parent_core, angle_offset)
+    SECONDARY_EMOTIONS = {
+        # Happy family (0°)
+        "hopeful": ("happy", -15),
+        "proud": ("happy", -10),
+        "excited": ("happy", 10),
+        "startled": ("happy", 20),  # Surprise-adjacent
+        
+        # Powerful family (60°)
+        "confident": ("powerful", -10),
+        "strong": ("powerful", 0),
+        "brave": ("powerful", 10),
+        
+        # Disgusted family (120°)
+        "disapproving": ("disgusted", -15),
+        "awful": ("disgusted", -5),
+        "repelled": ("disgusted", 10),
+        "threatened": ("disgusted", 20),
+        
+        # Angry family (180°)
+        "critical": ("angry", -25),
+        "frustrated": ("angry", -15),
+        "bitter": ("angry", -5),
+        "humiliated": ("angry", 15),
+        "insecure": ("angry", 25),
+        
+        # Worried family (240°)
+        "helpless": ("worried", -15),
+        "excluded": ("worried", -5),
+        "anxious": ("worried", 5),
+        "nervous": ("worried", 10),
+        "scared": ("worried", 15),
+        "fearful": ("worried", 15),
+        
+        # Sad family (300°)
+        "hurt": ("sad", -15),
+        "guilty": ("sad", -5),
+        "powerless": ("sad", 5),
+        "lonely": ("sad", 15),
+        "depressed": ("sad", 10),
+    }
+    
+    # Common emotion aliases
+    ALIASES = {
+        "happiness": "happy",
+        "joy": "happy",
+        "joyful": "happy",
+        "content": "happy",
+        "satisfied": "happy",
+        "satisfaction": "happy",
+        "curious": "happy",  # Positive engagement
+        "curiosity": "happy",
+        "interest": "happy",
+        "interested": "happy",
+        "engaged": "happy",
+        "flow": "happy",  # Deep engagement state
+        
+        "anger": "angry",
+        "mad": "angry",
+        "irritated": "angry",
+        "annoyed": "angry",
+        "furious": "angry",
+        "rage": "angry",
+        
+        "worry": "worried",
+        "anxiety": "worried",
+        "fear": "worried",
+        "afraid": "worried",
+        "concern": "worried",
+        "concerned": "worried",
+        "apprehensive": "worried",
+        
+        "sadness": "sad",
+        "unhappy": "sad",
+        "melancholy": "sad",
+        "grief": "sad",
+        "sorrow": "sad",
+        
+        "disgust": "disgusted",
+        "revulsion": "disgusted",
+        "contempt": "disgusted",
+        
+        "power": "powerful",
+        "strength": "powerful",
+        "empowered": "powerful",
+        "capable": "powerful",
+        
+        "empathy": "worried",  # Concern for others
+        "compassion": "worried",
+        "sympathy": "worried",
+        "protective": "powerful",  # Protective is a form of power
+        
+        "neutral": "neutral",
+        "calm": "neutral",
+        "relaxed": "neutral",
+        "balanced": "neutral",
+        "centered": "neutral",
+    }
+    
+    def __init__(self, search_engine=None):
+        """
+        Initialize emotion wheel.
+        
+        Args:
+            search_engine: Optional SemanticSearchEngine for fuzzy matching
+        """
+        self.search_engine = search_engine
+    
+    def _normalize_emotion(self, emotion: str) -> str:
+        """Normalize emotion string (lowercase, strip, handle aliases)."""
+        emotion = emotion.lower().strip().replace("_", " ").replace("-", " ")
+        
+        # Check aliases first
+        if emotion in self.ALIASES:
+            return self.ALIASES[emotion]
+        
+        return emotion
+    
+    def get_emotion_position(self, emotion: str, intensity: float = 0.5) -> tuple[float, float]:
+        """
+        Get the position of an emotion on the wheel.
+        
+        Args:
+            emotion: The emotion name
+            intensity: The intensity (0-1), used as radius
+            
+        Returns:
+            (angle_degrees, radius) tuple
+            Returns (0, 0) for neutral/center
+        """
+        emotion = self._normalize_emotion(emotion)
+        
+        # Special case: neutral is at center
+        if emotion == "neutral":
+            return (0.0, 0.0)
+        
+        # Check core emotions
+        if emotion in self.CORE_EMOTIONS:
+            return (float(self.CORE_EMOTIONS[emotion]), intensity)
+        
+        # Check secondary emotions
+        if emotion in self.SECONDARY_EMOTIONS:
+            parent, offset = self.SECONDARY_EMOTIONS[emotion]
+            base_angle = self.CORE_EMOTIONS[parent]
+            return (float(base_angle + offset) % 360, intensity)
+        
+        # Try semantic search for unknown emotions
+        if self.search_engine and self.search_engine.is_available():
+            closest = self._find_closest_emotion_semantic(emotion)
+            if closest:
+                return self.get_emotion_position(closest, intensity)
+        
+        # Fallback: try simple text matching
+        closest = self._find_closest_emotion_text(emotion)
+        if closest:
+            return self.get_emotion_position(closest, intensity)
+        
+        # Default to neutral if completely unknown
+        return (0.0, 0.0)
+    
+    def _find_closest_emotion_text(self, emotion: str) -> Optional[str]:
+        """Find closest matching emotion using text similarity."""
+        emotion_lower = emotion.lower()
+        
+        # Check if emotion contains or is contained in any known emotion
+        all_emotions = (
+            list(self.CORE_EMOTIONS.keys()) + 
+            list(self.SECONDARY_EMOTIONS.keys()) +
+            list(self.ALIASES.keys())
+        )
+        
+        for known in all_emotions:
+            if known in emotion_lower or emotion_lower in known:
+                # Return the canonical form
+                if known in self.ALIASES:
+                    return self.ALIASES[known]
+                return known
+        
+        return None
+    
+    def _find_closest_emotion_semantic(self, emotion: str) -> Optional[str]:
+        """Find closest matching emotion using semantic search."""
+        if not self.search_engine or not self.search_engine.is_available():
+            return None
+        
+        # Build a query with emotion context
+        query = f"emotion feeling {emotion}"
+        
+        # Create temporary embeddings for known emotions and compare
+        model = self.search_engine.model
+        if model is None:
+            return None
+        
+        try:
+            # Get embedding for the unknown emotion
+            query_embedding = model.encode(query, convert_to_numpy=True)
+            
+            # Compare against all known emotions
+            all_emotions = list(self.CORE_EMOTIONS.keys()) + list(self.SECONDARY_EMOTIONS.keys())
+            best_match = None
+            best_similarity = 0.0
+            
+            for known_emotion in all_emotions:
+                known_embedding = model.encode(f"emotion feeling {known_emotion}", convert_to_numpy=True)
+                similarity = float(np.dot(query_embedding, known_embedding) / (
+                    np.linalg.norm(query_embedding) * np.linalg.norm(known_embedding)
+                ))
+                
+                if similarity > best_similarity:
+                    best_similarity = similarity
+                    best_match = known_emotion
+            
+            # Only return if similarity is above threshold
+            if best_similarity > 0.6:
+                return best_match
+                
+        except Exception:
+            pass
+        
+        return None
+    
+    def position_to_cartesian(self, angle: float, radius: float) -> tuple[float, float]:
+        """Convert polar (angle, radius) to cartesian (x, y)."""
+        angle_rad = np.radians(angle)
+        x = radius * np.cos(angle_rad)
+        y = radius * np.sin(angle_rad)
+        return (x, y)
+    
+    def cartesian_to_position(self, x: float, y: float) -> tuple[float, float]:
+        """Convert cartesian (x, y) to polar (angle, radius)."""
+        radius = np.sqrt(x**2 + y**2)
+        if radius < 0.01:  # Effectively at center
+            return (0.0, 0.0)
+        angle = np.degrees(np.arctan2(y, x)) % 360
+        return (angle, min(radius, 1.0))  # Clamp radius to 1
+    
+    def average_emotions(
+        self,
+        prev_emotion: str,
+        prev_intensity: float,
+        new_emotion: str,
+        new_intensity: float,
+        blend_factor: float = 0.5
+    ) -> tuple[str, float]:
+        """
+        Average two emotions on the wheel.
+        
+        Uses weighted averaging in cartesian space to smoothly blend
+        between emotional states.
+        
+        Args:
+            prev_emotion: Previous emotion name
+            prev_intensity: Previous emotion intensity (0-1)
+            new_emotion: New emotion name  
+            new_intensity: New emotion intensity (0-1)
+            blend_factor: How much weight to give new emotion (0-1)
+                         0.5 = equal blend, 1.0 = fully new emotion
+        
+        Returns:
+            (emotion_name, intensity) of the blended result
+        """
+        # Get positions for both emotions
+        prev_angle, prev_radius = self.get_emotion_position(prev_emotion, prev_intensity)
+        new_angle, new_radius = self.get_emotion_position(new_emotion, new_intensity)
+        
+        # Handle special cases
+        # If both are neutral, stay neutral
+        if prev_radius < 0.01 and new_radius < 0.01:
+            return ("neutral", 0.0)
+        
+        # If previous is neutral, just use new (with reduced intensity based on blend)
+        if prev_radius < 0.01:
+            result_intensity = new_radius * blend_factor
+            if result_intensity < 0.1:
+                return ("neutral", 0.0)
+            return (new_emotion, result_intensity)
+        
+        # If new is neutral, move toward center
+        if new_radius < 0.01:
+            result_intensity = prev_radius * (1 - blend_factor)
+            if result_intensity < 0.1:
+                return ("neutral", 0.0)
+            # Keep same emotion but reduced intensity
+            return (prev_emotion, result_intensity)
+        
+        # Convert to cartesian for averaging
+        prev_x, prev_y = self.position_to_cartesian(prev_angle, prev_radius)
+        new_x, new_y = self.position_to_cartesian(new_angle, new_radius)
+        
+        # Weighted average
+        avg_x = prev_x * (1 - blend_factor) + new_x * blend_factor
+        avg_y = prev_y * (1 - blend_factor) + new_y * blend_factor
+        
+        # Convert back to polar
+        result_angle, result_radius = self.cartesian_to_position(avg_x, avg_y)
+        
+        # If result is very close to center, return neutral
+        if result_radius < 0.1:
+            return ("neutral", 0.0)
+        
+        # Find the closest emotion to the resulting angle
+        result_emotion = self._angle_to_emotion(result_angle)
+        
+        return (result_emotion, result_radius)
+    
+    def _angle_to_emotion(self, angle: float, precision_threshold: float = 15.0) -> str:
+        """
+        Find the closest emotion to an angle.
+        
+        Returns a secondary emotion if the angle is far enough from core emotions
+        (lower confidence in core match), otherwise returns the core emotion.
+        
+        Args:
+            angle: The angle in degrees (0-360)
+            precision_threshold: If closest core emotion is further than this,
+                               try to find a more precise secondary emotion.
+                               Default 15° means ~80% confidence in core emotion.
+        
+        Returns:
+            Emotion name (core or secondary depending on precision)
+        """
+        # Normalize angle to 0-360
+        angle = angle % 360
+        
+        # Find closest core emotion and distance
+        min_core_distance = float('inf')
+        closest_core = "happy"
+        
+        for emotion, emotion_angle in self.CORE_EMOTIONS.items():
+            # Calculate angular distance (handle wraparound)
+            distance = min(
+                abs(angle - emotion_angle),
+                360 - abs(angle - emotion_angle)
+            )
+            if distance < min_core_distance:
+                min_core_distance = distance
+                closest_core = emotion
+        
+        # If we're very close to a core emotion, return it
+        if min_core_distance <= precision_threshold:
+            return closest_core
+        
+        # Otherwise, try to find a more precise secondary emotion
+        min_secondary_distance = float('inf')
+        closest_secondary = None
+        
+        for emotion, (parent, offset) in self.SECONDARY_EMOTIONS.items():
+            # Calculate the actual angle for this secondary emotion
+            secondary_angle = (self.CORE_EMOTIONS[parent] + offset) % 360
+            
+            # Calculate angular distance (handle wraparound)
+            distance = min(
+                abs(angle - secondary_angle),
+                360 - abs(angle - secondary_angle)
+            )
+            if distance < min_secondary_distance:
+                min_secondary_distance = distance
+                closest_secondary = emotion
+        
+        # Return secondary if it's closer, otherwise core
+        if closest_secondary and min_secondary_distance < min_core_distance:
+            return closest_secondary
+        
+        return closest_core
+    
+    def get_valence(self, emotion: str) -> str:
+        """
+        Get the valence (positive/negative/neutral) of an emotion.
+        
+        Returns:
+            "positive", "negative", or "neutral"
+        """
+        emotion = self._normalize_emotion(emotion)
+        
+        if emotion == "neutral":
+            return "neutral"
+        
+        # Get the position to determine core emotion family
+        angle, radius = self.get_emotion_position(emotion)
+        
+        if radius < 0.1:
+            return "neutral"
+        
+        # Happy (0°) and Powerful (60°) are positive
+        # Others are negative
+        if angle < 90 or angle > 330:  # Happy region
+            return "positive"
+        elif angle < 150:  # Powerful/Disgusted boundary - mixed
+            return "neutral" if angle > 90 else "positive"
+        else:  # Disgusted, Angry, Worried, Sad
+            return "negative"
+
+
+# =============================================================================
 # SEMANTIC SEARCH ENGINE - Embedding-based similarity search
 # =============================================================================
 
@@ -349,6 +775,8 @@ EXAMPLES of when to deactivate:
 - A task is completed → deactivate or archive the task
 - User corrects a misunderstanding → invalidate the incorrect fact
 
+NEVER DEACTIVATE "current_emotion" - it is a permanent state-tracking node that should only be UPDATED, never superseded/invalidated/archived.
+
 ALWAYS check existing nodes for contradictions when adding new facts!
 
 EMOTIONAL STATE UPDATE (REQUIRED):
@@ -448,6 +876,9 @@ class BrainInterface:
             print(f"{Colors.CYAN}Semantic search enabled (embedding-based context retrieval){Colors.RESET}")
         else:
             print(f"{Colors.YELLOW}Semantic search unavailable, using keyword fallback{Colors.RESET}")
+        
+        # Initialize emotion wheel for emotion averaging
+        self.emotion_wheel = EmotionWheel(search_engine=self.search_engine)
         
         # Node type mapping from strings
         self.node_type_map = {
@@ -591,6 +1022,71 @@ class BrainInterface:
             pass
         
         return properties if properties else None
+    
+    def _average_emotion_update(self, current_node: Node, new_content: str) -> str:
+        """
+        Average the previous emotional state with the new one using the emotion wheel.
+        
+        This creates smoother emotional transitions by blending the previous
+        emotion position and intensity with the new extracted emotion.
+        
+        Args:
+            current_node: The current emotion node with previous state
+            new_content: The new emotion content string from LLM extraction
+            
+        Returns:
+            Updated content string with averaged emotion
+        """
+        # Parse previous emotion from current node
+        prev_props = current_node.properties or {}
+        prev_emotion = prev_props.get("primary", "neutral")
+        prev_intensity = prev_props.get("intensity", 0.5)
+        
+        # Parse new emotion from LLM extraction
+        new_props = self._parse_emotion_content(new_content)
+        if not new_props:
+            return new_content  # Can't parse, return as-is
+        
+        new_emotion = new_props.get("primary", "neutral")
+        new_intensity = new_props.get("intensity", 0.5)
+        
+        # Extract the reason from new content (everything after the valence part)
+        reason = ""
+        parts = new_content.split("|")
+        if len(parts) >= 4:
+            reason = parts[3].strip()
+        elif len(parts) >= 3:
+            # Check if last part is the reason (not intensity or valence)
+            last_part = parts[-1].strip()
+            if "intensity:" not in last_part.lower() and "valence:" not in last_part.lower():
+                reason = last_part
+        
+        # Use emotion wheel to average the emotions
+        # blend_factor of 0.6 gives slightly more weight to new emotion
+        # This allows emotions to change but with some inertia
+        avg_emotion, avg_intensity = self.emotion_wheel.average_emotions(
+            prev_emotion=prev_emotion,
+            prev_intensity=prev_intensity,
+            new_emotion=new_emotion,
+            new_intensity=new_intensity,
+            blend_factor=0.6
+        )
+        
+        # Get valence for the averaged emotion
+        avg_valence = self.emotion_wheel.get_valence(avg_emotion)
+        
+        # Log the averaging in verbose mode
+        if self.chat.verbose:
+            print(f"{Colors.DIM}  ♡ Emotion averaging: {prev_emotion}({prev_intensity:.1f}) + "
+                  f"{new_emotion}({new_intensity:.1f}) → {avg_emotion}({avg_intensity:.2f}){Colors.RESET}")
+        
+        # Build the new content string
+        if reason:
+            result = f"{avg_emotion} | intensity: {avg_intensity:.2f} | valence: {avg_valence} | {reason}"
+        else:
+            result = f"{avg_emotion} | intensity: {avg_intensity:.2f} | valence: {avg_valence} | Blended emotional state"
+        
+        return result
     
     def _search_by_word(self, word: str, limit: int = 10) -> list[Node]:
         """Search graph for nodes matching a single word/phrase."""
@@ -1052,8 +1548,9 @@ class BrainInterface:
                 elif update.get("new_content"):
                     new_content = update["new_content"]
                     
-                    # Special handling for current_emotion node - parse properties from content
+                    # Special handling for current_emotion node - use emotion wheel averaging
                     if node_label == "current_emotion" and new_content:
+                        new_content = self._average_emotion_update(node, new_content)
                         new_properties = self._parse_emotion_content(new_content)
                 
                 self.graph.update_node(
