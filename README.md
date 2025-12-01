@@ -16,6 +16,8 @@ Vibe coded in my free time :D.
 pip install -r requirements.txt
 ```
 
+Install and run Ollama and pull the gpt-oss:20b model.
+
 ## Usage
 
 ```bash
