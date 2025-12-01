@@ -1064,13 +1064,22 @@ class BrainInterface:
             if "intensity:" not in last_part.lower() and "valence:" not in last_part.lower():
                 reason = last_part
         
-        # Determine if the new emotion should "win" or be blended
+        # Normalize emotions for comparison
+        prev_normalized = self.emotion_wheel._normalize_emotion(prev_emotion)
+        new_normalized = self.emotion_wheel._normalize_emotion(new_emotion)
+        
+        # Determine if the new emotion should "win", stay stable, or be blended
         # High intensity new emotions (>= 0.7) should take precedence to break emotion loops
         # Low intensity secondary emotions blend back toward the primary/core emotion
         intensity_threshold = 0.7
         
-        if new_intensity >= intensity_threshold:
-            # Strong new emotion wins - use it directly with slight dampening
+        if prev_normalized == new_normalized:
+            # Same emotion - maintain stability, use the new intensity directly
+            # No dampening when emotion is consistent (prevents decay loops)
+            avg_emotion = new_emotion
+            avg_intensity = new_intensity
+        elif new_intensity >= intensity_threshold:
+            # Strong NEW emotion wins - use it directly with slight dampening
             avg_emotion = new_emotion
             avg_intensity = new_intensity * 0.95  # Slight dampening to prevent runaway
         elif new_intensity < 0.4 and prev_intensity >= 0.5:
