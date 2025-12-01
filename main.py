@@ -2,7 +2,7 @@
 Brain Interface - Semantic Memory Enhanced LLM
 
 Flow for every prompt:
-1. Query semantic graph for relevant context
+1. Query semantic graph for relevant context using SEMANTIC SEARCH
 2. Send prompt to LLM WITH that context, get response
 3. Ask LLM to extract knowledge for graph updates (JSON)
 4. Update semantic graph with extracted knowledge
@@ -13,7 +13,32 @@ persistent, structured memory that improves over time.
 
 import json
 import re
+import numpy as np
 from typing import Optional, Generator
+
+# Sentence Transformers setup for semantic search
+SEMANTIC_SEARCH_AVAILABLE = False
+_sentence_model = None
+
+def _get_sentence_model():
+    """Lazy load the sentence transformer model."""
+    global _sentence_model, SEMANTIC_SEARCH_AVAILABLE
+    if _sentence_model is None:
+        try:
+            from sentence_transformers import SentenceTransformer
+            # Use a small, fast model optimized for semantic similarity
+            # 'all-MiniLM-L6-v2' is ~80MB and very fast
+            print("Loading semantic search model (first time may take a moment)...")
+            _sentence_model = SentenceTransformer('all-MiniLM-L6-v2')
+            SEMANTIC_SEARCH_AVAILABLE = True
+            print("Semantic search model loaded successfully.")
+        except ImportError:
+            print("sentence-transformers not available, falling back to keyword search")
+            SEMANTIC_SEARCH_AVAILABLE = False
+        except Exception as e:
+            print(f"Error loading sentence transformer: {e}")
+            SEMANTIC_SEARCH_AVAILABLE = False
+    return _sentence_model
 
 # NLTK setup - check once and download if needed
 NLTK_AVAILABLE = False
@@ -67,6 +92,178 @@ from semantic_graph import (
     ConfidenceLevel, Node, Edge
 )
 from interface import OllamaChat, Colors
+
+
+# =============================================================================
+# SEMANTIC SEARCH ENGINE - Embedding-based similarity search
+# =============================================================================
+
+class SemanticSearchEngine:
+    """
+    Semantic search engine using sentence embeddings.
+    
+    Provides semantic similarity search across graph nodes by:
+    1. Computing embeddings for node content (label + content)
+    2. Storing embeddings in nodes for persistence
+    3. Using cosine similarity to find relevant nodes
+    """
+    
+    def __init__(self, graph: SemanticGraph, verbose: bool = False):
+        """
+        Initialize the semantic search engine.
+        
+        Args:
+            graph: The semantic graph to search
+            verbose: Whether to print debug information
+        """
+        self.graph = graph
+        self.verbose = verbose
+        self.model = _get_sentence_model()
+        self._embeddings_cache: dict[str, np.ndarray] = {}
+        
+        # Build initial embedding index from graph
+        if self.model is not None:
+            self._build_embedding_index()
+    
+    def _get_node_text(self, node: Node) -> str:
+        """Get searchable text for a node."""
+        # Combine label and content for richer semantic representation
+        text = f"{node.label.replace('_', ' ')}: {node.content}"
+        
+        # Add tags if available
+        if node.metadata.tags:
+            text += f" [{', '.join(node.metadata.tags)}]"
+        
+        return text
+    
+    def _compute_embedding(self, text: str) -> Optional[np.ndarray]:
+        """Compute embedding for a piece of text."""
+        if self.model is None:
+            return None
+        try:
+            # encode returns numpy array
+            embedding = self.model.encode(text, convert_to_numpy=True)
+            return embedding
+        except Exception as e:
+            if self.verbose:
+                print(f"Error computing embedding: {e}")
+            return None
+    
+    def _build_embedding_index(self):
+        """Build embedding index for all nodes in the graph."""
+        if self.model is None:
+            return
+        
+        nodes_to_embed = []
+        texts_to_embed = []
+        
+        for node in self.graph.nodes.values():
+            if node.status.value != "active":
+                continue
+            
+            # Check if node already has valid embeddings
+            if node.embeddings is not None and len(node.embeddings) > 0:
+                # Load from persisted embeddings
+                self._embeddings_cache[node.id] = np.array(node.embeddings)
+            else:
+                # Need to compute embedding
+                nodes_to_embed.append(node)
+                texts_to_embed.append(self._get_node_text(node))
+        
+        # Batch compute embeddings for efficiency
+        if texts_to_embed:
+            if self.verbose:
+                print(f"Computing embeddings for {len(texts_to_embed)} nodes...")
+            
+            try:
+                embeddings = self.model.encode(texts_to_embed, convert_to_numpy=True, show_progress_bar=False)
+                
+                for node, embedding in zip(nodes_to_embed, embeddings):
+                    self._embeddings_cache[node.id] = embedding
+                    # Store in node for persistence
+                    node.embeddings = embedding.tolist()
+                
+                if self.verbose:
+                    print(f"Computed embeddings for {len(texts_to_embed)} nodes")
+            except Exception as e:
+                if self.verbose:
+                    print(f"Error computing batch embeddings: {e}")
+    
+    def update_node_embedding(self, node: Node):
+        """Update embedding for a single node (call after node is added/modified)."""
+        if self.model is None:
+            return
+        
+        text = self._get_node_text(node)
+        embedding = self._compute_embedding(text)
+        
+        if embedding is not None:
+            self._embeddings_cache[node.id] = embedding
+            node.embeddings = embedding.tolist()
+    
+    def remove_node_embedding(self, node_id: str):
+        """Remove embedding for a node (call when node is removed)."""
+        self._embeddings_cache.pop(node_id, None)
+    
+    def semantic_search(
+        self,
+        query: str,
+        limit: int = 10,
+        min_similarity: float = 0.3,
+        exclude_ids: Optional[set[str]] = None
+    ) -> list[tuple[Node, float]]:
+        """
+        Search for semantically similar nodes.
+        
+        Args:
+            query: The search query
+            limit: Maximum number of results
+            min_similarity: Minimum cosine similarity threshold
+            exclude_ids: Node IDs to exclude from results
+            
+        Returns:
+            List of (node, similarity_score) tuples, sorted by similarity
+        """
+        if self.model is None:
+            return []
+        
+        exclude_ids = exclude_ids or set()
+        
+        # Compute query embedding
+        query_embedding = self._compute_embedding(query)
+        if query_embedding is None:
+            return []
+        
+        # Compute similarities
+        results = []
+        
+        for node_id, node_embedding in self._embeddings_cache.items():
+            if node_id in exclude_ids:
+                continue
+            
+            node = self.graph.nodes.get(node_id)
+            if node is None or node.status.value != "active":
+                continue
+            
+            # Cosine similarity
+            similarity = np.dot(query_embedding, node_embedding) / (
+                np.linalg.norm(query_embedding) * np.linalg.norm(node_embedding)
+            )
+            
+            # Apply confidence weighting
+            weighted_similarity = float(similarity) * node.confidence
+            
+            if weighted_similarity >= min_similarity:
+                results.append((node, weighted_similarity))
+        
+        # Sort by similarity (descending)
+        results.sort(key=lambda x: x[1], reverse=True)
+        
+        return results[:limit]
+    
+    def is_available(self) -> bool:
+        """Check if semantic search is available."""
+        return self.model is not None
 
 
 # =============================================================================
@@ -229,6 +426,13 @@ class BrainInterface:
                 print(f"{Colors.CYAN}Created new semantic memory (no bootstrap found){Colors.RESET}")
         
         self.auto_save = auto_save
+        
+        # Initialize semantic search engine for embedding-based retrieval
+        self.search_engine = SemanticSearchEngine(self.graph, verbose=verbose)
+        if self.search_engine.is_available():
+            print(f"{Colors.CYAN}Semantic search enabled (embedding-based context retrieval){Colors.RESET}")
+        else:
+            print(f"{Colors.YELLOW}Semantic search unavailable, using keyword fallback{Colors.RESET}")
         
         # Node type mapping from strings
         self.node_type_map = {
@@ -472,6 +676,10 @@ class BrainInterface:
         """
         Query the semantic graph for context relevant to the prompt.
         
+        Uses SEMANTIC SEARCH (embedding-based) as primary method for finding
+        contextually relevant memories. Falls back to keyword search if 
+        semantic search is unavailable.
+        
         Returns formatted context string for LLM.
         Always includes current emotional state.
         """
@@ -482,40 +690,62 @@ class BrainInterface:
         if emotional_context:
             context_parts.append(emotional_context)
         
-        # Extract keywords using NLTK
-        keywords = self._extract_keywords(prompt)
-        
         relevant_nodes = []
         seen_ids = set()
         
-        # Exclude current emotion node from keyword search (already included above)
+        # Exclude current emotion node from search (already included above)
         current_emotion = self._get_current_emotion()
         if current_emotion:
             seen_ids.add(current_emotion.id)
         
-        # Search for each keyword
-        for keyword in keywords:
-            results = self._search_by_word(keyword, limit=5)
-            for node in results:
+        # PRIMARY: Use semantic search if available
+        if self.search_engine.is_available():
+            # Semantic search finds contextually similar nodes
+            semantic_results = self.search_engine.semantic_search(
+                query=prompt,
+                limit=limit,
+                min_similarity=0.25,  # Lower threshold to be more inclusive
+                exclude_ids=seen_ids
+            )
+            
+            for node, similarity in semantic_results:
                 if node.id not in seen_ids:
-                    relevant_nodes.append(node)
+                    relevant_nodes.append((node, similarity))
+                    seen_ids.add(node.id)
+            
+            if self.chat.verbose and semantic_results:
+                print(f"{Colors.DIM}(Semantic search found {len(semantic_results)} relevant memories){Colors.RESET}")
+        
+        # FALLBACK: Keyword search if semantic search unavailable or found few results
+        if not self.search_engine.is_available() or len(relevant_nodes) < 3:
+            # Extract keywords using NLTK
+            keywords = self._extract_keywords(prompt)
+            
+            # Search for each keyword
+            for keyword in keywords:
+                results = self._search_by_word(keyword, limit=5)
+                for node in results:
+                    if node.id not in seen_ids:
+                        # Lower score for keyword matches vs semantic
+                        relevant_nodes.append((node, 0.5))
+                        seen_ids.add(node.id)
+            
+            # Also do a full-text search on the whole prompt
+            full_results = self._search_by_word(prompt, limit=3)
+            for node in full_results:
+                if node.id not in seen_ids:
+                    relevant_nodes.append((node, 0.4))
                     seen_ids.add(node.id)
         
-        # Also do a full-text search on the whole prompt
-        full_results = self._search_by_word(prompt, limit=3)
-        for node in full_results:
-            if node.id not in seen_ids:
-                relevant_nodes.append(node)
-                seen_ids.add(node.id)
-        
-        # Limit total results
+        # Sort by relevance score and limit
+        relevant_nodes.sort(key=lambda x: x[1], reverse=True)
         relevant_nodes = relevant_nodes[:limit]
         
         if relevant_nodes:
             context_parts.append("[Relevant Memory Context]")
         
-        for node in relevant_nodes:
-            # Get node info
+        for node, score in relevant_nodes:
+            # Get node info with relevance indicator
             node_info = f"- [{node.type.value}] {node.label}: {node.content}"
             if node.confidence < 1.0:
                 node_info += f" (confidence: {node.confidence:.0%})"
@@ -731,6 +961,11 @@ class BrainInterface:
                     source="conversation"
                 )
                 node_label_to_id[label.lower()] = node.id
+                
+                # Update embedding for the new node to keep semantic search in sync
+                if self.search_engine.is_available():
+                    self.search_engine.update_node_embedding(node)
+                
                 count += 1
                 if self.chat.verbose:
                     print(f"{Colors.DIM}  + Added {node_type.value}: {label}{Colors.RESET}")
@@ -803,6 +1038,13 @@ class BrainInterface:
                     confidence=update.get("new_confidence"),
                     properties=new_properties
                 )
+                
+                # Update embedding for the modified node to keep semantic search in sync
+                if self.search_engine.is_available() and new_content:
+                    updated_node = self.graph.nodes.get(node_id)
+                    if updated_node:
+                        self.search_engine.update_node_embedding(updated_node)
+                
                 count += 1
                 if self.chat.verbose:
                     print(f"{Colors.DIM}  ~ Updated: {node_label}{Colors.RESET}")
@@ -902,15 +1144,37 @@ class BrainInterface:
         print(f"{Colors.CYAN}======================{Colors.RESET}")
     
     def search_memory(self, query: str, limit: int = 5):
-        """Search semantic memory."""
-        results = self.graph.search(query, limit=limit)
+        """
+        Search semantic memory using embedding-based semantic search.
+        
+        Falls back to keyword search if semantic search is unavailable.
+        """
         print(f"\n{Colors.CYAN}=== Memory Search: '{query}' ==={Colors.RESET}")
-        for node in results:
-            print(f"  [{node.type.value}] {node.label}")
-            print(f"    {node.content[:100]}...")
-            neighbors = self.graph.get_neighbors(node.id)
-            if neighbors:
-                print(f"    Related: {', '.join(n.label for n in neighbors[:3])}")
+        
+        # Try semantic search first
+        if self.search_engine.is_available():
+            results = self.search_engine.semantic_search(query, limit=limit)
+            if results:
+                print(f"{Colors.DIM}(Using semantic search){Colors.RESET}")
+                for node, score in results:
+                    print(f"  [{node.type.value}] {node.label} (relevance: {score:.0%})")
+                    print(f"    {node.content[:100]}...")
+                    neighbors = self.graph.get_neighbors(node.id)
+                    if neighbors:
+                        print(f"    Related: {', '.join(n.label for n in neighbors[:3])}")
+            else:
+                print("  No semantically similar memories found.")
+        else:
+            # Fallback to keyword search
+            results = self.graph.search(query, limit=limit)
+            print(f"{Colors.DIM}(Using keyword search){Colors.RESET}")
+            for node in results:
+                print(f"  [{node.type.value}] {node.label}")
+                print(f"    {node.content[:100]}...")
+                neighbors = self.graph.get_neighbors(node.id)
+                if neighbors:
+                    print(f"    Related: {', '.join(n.label for n in neighbors[:3])}")
+        
         print(f"{Colors.CYAN}================================{Colors.RESET}")
     
     def clear_chat_history(self):

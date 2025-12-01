@@ -11,6 +11,7 @@ A comprehensive graph-based knowledge system that supports:
 """
 
 import json
+import re
 import uuid
 from datetime import datetime
 from enum import Enum
@@ -18,6 +19,27 @@ from typing import Any, Optional, Callable
 from dataclasses import dataclass, field, asdict
 from collections import defaultdict
 import hashlib
+
+
+class CompactEmbeddingEncoder(json.JSONEncoder):
+    """Custom JSON encoder that keeps embedding arrays on a single line."""
+    def encode(self, obj):
+        result = super().encode(obj)
+        # Pattern to find "embeddings": followed by a multi-line array
+        # This collapses the array to a single line
+        def compact_embedding(match):
+            # Get the array content and remove newlines/extra spaces
+            array_str = match.group(1)
+            # Remove newlines and collapse multiple spaces
+            compact = re.sub(r'\s+', ' ', array_str).strip()
+            return f'"embeddings": [{compact}]'
+        
+        result = re.sub(
+            r'"embeddings":\s*\[([\s\S]*?)\]',
+            compact_embedding,
+            result
+        )
+        return result
 
 
 # ============================================================================
@@ -1231,7 +1253,7 @@ class SemanticGraph:
         }
         
         with open(filepath, 'w', encoding='utf-8') as f:
-            json.dump(data, f, indent=2, ensure_ascii=False)
+            f.write(CompactEmbeddingEncoder(indent=2, ensure_ascii=False).encode(data))
     
     @classmethod
     def load(cls, filepath: str) -> "SemanticGraph":
