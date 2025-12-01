@@ -209,4 +209,5 @@ __marimo__/
 # Custom additions
 brain_memory.json
 configuration.json
+configuration_backup.json
 user_system_prompts.txt
