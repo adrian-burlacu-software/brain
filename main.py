@@ -336,6 +336,21 @@ BEFORE extracting, evaluate: Is this information worth storing long-term?
 - Is it entertainment, jokes, trivia, or small talk? → Skip it (return empty nodes/relationships)
 - Would this be useful in a future conversation? → Store it if yes
 
+STALE FACT MANAGEMENT (CRITICAL):
+When new information CONTRADICTS or SUPERSEDES existing facts, you MUST deactivate the old facts.
+Use the "deactivations" array to mark nodes as stale. Available statuses:
+- "superseded": The fact was true but is now replaced by newer information (e.g., "assistant_does_not_have_user_name" superseded by "assistant_has_user_name")
+- "invalidated": The fact was wrong or is no longer true
+- "archived": The fact is no longer relevant but wasn't wrong
+
+EXAMPLES of when to deactivate:
+- User provides their name → deactivate any "does_not_have_user_name" or "unknown_user_name" facts
+- User changes a preference → deactivate the old preference fact
+- A task is completed → deactivate or archive the task
+- User corrects a misunderstanding → invalidate the incorrect fact
+
+ALWAYS check existing nodes for contradictions when adding new facts!
+
 EMOTIONAL STATE UPDATE (REQUIRED):
 Analyze the USER's message for emotional cues (distress, fear, excitement, frustration, etc.).
 Update "current_emotion" to reflect an APPROPRIATE emotional response to the user's state.
@@ -355,7 +370,7 @@ Examples:
 Extract ONLY new, meaningful, RELEVANT knowledge. Be very conservative.
 
 Return JSON:
-{{"nodes": [{{"type": "fact|concept|entity|...", "label": "snake_case", "content": "brief description", "confidence": 0.8}}], "relationships": [{{"source_label": "label", "relation": "related_to|...", "target_label": "label", "confidence": 0.8}}], "updates": [{{"node_label": "current_emotion", "new_content": "<emotion> | intensity: <0.0-1.0> | valence: <pos/neg/neutral> | <reason>"}}]}}
+{{"nodes": [{{"type": "fact|concept|entity|...", "label": "snake_case", "content": "brief description", "confidence": 0.8}}], "relationships": [{{"source_label": "label", "relation": "related_to|...", "target_label": "label", "confidence": 0.8}}], "updates": [{{"node_label": "current_emotion", "new_content": "<emotion> | intensity: <0.0-1.0> | valence: <pos/neg/neutral> | <reason>"}}], "deactivations": [{{"node_label": "label_to_deactivate", "status": "superseded|invalidated|archived", "reason": "brief explanation"}}]}}
 """
 
 SEMANTIC_EXTRACTION_TEMPLATE = """Extract knowledge from this exchange:
@@ -769,21 +784,28 @@ class BrainInterface:
         context_parts.append("[End Context]\n")
         return "\n".join(context_parts)
     
-    def _get_existing_nodes_summary(self, limit: int = 10) -> str:
-        """Get a summary of existing nodes for the extraction prompt."""
+    def _get_existing_nodes_summary(self, limit: int = 15) -> str:
+        """Get a summary of existing nodes for the extraction prompt, including content for contradiction detection."""
         if not self.graph.nodes:
             return "none"
         
-        # Prioritize recent and high-confidence nodes
+        # Only include active nodes, prioritize recent and high-confidence
+        active_nodes = [n for n in self.graph.nodes.values() if n.status.value == "active"]
         nodes = sorted(
-            self.graph.nodes.values(),
+            active_nodes,
             key=lambda n: (n.metadata.updated_at, n.confidence),
             reverse=True
         )[:limit]
         
-        # Very compact format to save tokens
-        labels = [node.label for node in nodes]
-        return ", ".join(labels) if labels else "none"
+        # Include label AND content so LLM can detect contradictions
+        # Format: "label: content" for each node
+        summaries = []
+        for node in nodes:
+            # Truncate content if too long
+            content = node.content[:80] + "..." if len(node.content) > 80 else node.content
+            summaries.append(f"- {node.label}: {content}")
+        
+        return "\n".join(summaries) if summaries else "none"
     
     def _extract_knowledge(self, user_prompt: str, assistant_response: str) -> dict:
         """
@@ -906,14 +928,16 @@ class BrainInterface:
             result.setdefault("nodes", [])
             result.setdefault("relationships", [])
             result.setdefault("updates", [])
+            result.setdefault("deactivations", [])
             
             # Show what was extracted in verbose mode
             if self.chat.verbose:
                 n_nodes = len(result.get("nodes", []))
                 n_rels = len(result.get("relationships", []))
                 n_updates = len(result.get("updates", []))
-                if n_nodes or n_rels or n_updates:
-                    print(f"{Colors.DIM}(Extracted: {n_nodes} nodes, {n_rels} relationships, {n_updates} updates){Colors.RESET}")
+                n_deactivations = len(result.get("deactivations", []))
+                if n_nodes or n_rels or n_updates or n_deactivations:
+                    print(f"{Colors.DIM}(Extracted: {n_nodes} nodes, {n_rels} relationships, {n_updates} updates, {n_deactivations} deactivations){Colors.RESET}")
             
             return result
             
@@ -923,7 +947,7 @@ class BrainInterface:
                 print(f"{Colors.DIM}(Could not parse extraction JSON: {e}){Colors.RESET}")
                 print(f"{Colors.DIM}Raw response ({len(response_text)} chars):{Colors.RESET}")
                 print(f"{Colors.DIM}{response_text}{Colors.RESET}")
-            return {"nodes": [], "relationships": [], "updates": []}
+            return {"nodes": [], "relationships": [], "updates": [], "deactivations": []}
     
     def _apply_knowledge(self, knowledge: dict) -> int:
         """
@@ -1051,6 +1075,69 @@ class BrainInterface:
             except Exception as e:
                 if self.chat.verbose:
                     print(f"{Colors.DIM}  ! Failed to update: {e}{Colors.RESET}")
+        
+        # Apply deactivations to stale nodes
+        status_map = {
+            "superseded": "superseded",
+            "invalidated": "invalidated", 
+            "archived": "archived"
+        }
+        
+        for deactivation in knowledge.get("deactivations", []):
+            node_label = deactivation.get("node_label", "").lower()
+            node_id = node_label_to_id.get(node_label)
+            status_str = deactivation.get("status", "superseded").lower()
+            reason = deactivation.get("reason", "")
+            
+            if not node_id:
+                # Try to find by partial label match
+                for label, nid in node_label_to_id.items():
+                    if node_label in label or label in node_label:
+                        node_id = nid
+                        break
+            
+            if not node_id:
+                if self.chat.verbose:
+                    print(f"{Colors.DIM}  ! Could not find node to deactivate: {node_label}{Colors.RESET}")
+                continue
+            
+            try:
+                from semantic_graph import NodeStatus
+                
+                # Map status string to NodeStatus enum
+                if status_str == "superseded":
+                    new_status = NodeStatus.SUPERSEDED
+                elif status_str == "invalidated":
+                    new_status = NodeStatus.INVALIDATED
+                elif status_str == "archived":
+                    new_status = NodeStatus.ARCHIVED
+                else:
+                    new_status = NodeStatus.SUPERSEDED  # Default
+                
+                node = self.graph.nodes.get(node_id)
+                if not node:
+                    continue
+                
+                # Update node status and add reason to properties
+                updated_props = node.properties.copy() if node.properties else {}
+                updated_props["deactivation_reason"] = reason
+                
+                self.graph.update_node(
+                    node_id=node_id,
+                    status=new_status,
+                    properties=updated_props
+                )
+                
+                # Remove from embedding cache since it's no longer active
+                if self.search_engine.is_available():
+                    self.search_engine.remove_node_embedding(node_id)
+                
+                count += 1
+                if self.chat.verbose:
+                    print(f"{Colors.DIM}  ✗ Deactivated ({status_str}): {node_label} - {reason}{Colors.RESET}")
+            except Exception as e:
+                if self.chat.verbose:
+                    print(f"{Colors.DIM}  ! Failed to deactivate: {e}{Colors.RESET}")
         
         return count
     

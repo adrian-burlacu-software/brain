@@ -549,29 +549,37 @@ class SemanticGraph:
     # Query Operations
     # ========================================================================
     
-    def get_nodes_by_type(self, node_type: NodeType) -> list[Node]:
+    def get_nodes_by_type(self, node_type: NodeType, active_only: bool = True) -> list[Node]:
         """Get all nodes of a specific type."""
         node_ids = self._nodes_by_type.get(node_type, set())
-        return [self.nodes[nid] for nid in node_ids if nid in self.nodes]
+        nodes = [self.nodes[nid] for nid in node_ids if nid in self.nodes]
+        if active_only:
+            nodes = [n for n in nodes if n.status == NodeStatus.ACTIVE]
+        return nodes
     
-    def get_nodes_by_label(self, label: str, fuzzy: bool = False) -> list[Node]:
+    def get_nodes_by_label(self, label: str, fuzzy: bool = False, active_only: bool = True) -> list[Node]:
         """Get nodes by label."""
         if fuzzy:
             results = []
             label_lower = label.lower()
             for node in self.nodes.values():
                 if label_lower in node.label.lower():
-                    results.append(node)
+                    if not active_only or node.status == NodeStatus.ACTIVE:
+                        results.append(node)
             return results
         
         node_ids = self._nodes_by_label.get(label.lower(), set())
-        return [self.nodes[nid] for nid in node_ids if nid in self.nodes]
+        nodes = [self.nodes[nid] for nid in node_ids if nid in self.nodes]
+        if active_only:
+            nodes = [n for n in nodes if n.status == NodeStatus.ACTIVE]
+        return nodes
     
     def get_neighbors(
         self,
         node_id: str,
         relation: Optional[RelationType] = None,
-        direction: str = "both"
+        direction: str = "both",
+        active_only: bool = True
     ) -> list[Node]:
         """
         Get neighboring nodes.
@@ -580,6 +588,7 @@ class SemanticGraph:
             node_id: ID of the node
             relation: Filter by relation type
             direction: "outgoing", "incoming", or "both"
+            active_only: Only return active nodes (default True)
             
         Returns:
             List of neighboring nodes
@@ -591,40 +600,68 @@ class SemanticGraph:
                 edge = self.edges[edge_id]
                 if relation is None or edge.relation == relation:
                     if edge.target_id in self.nodes:
-                        neighbors.append(self.nodes[edge.target_id])
+                        node = self.nodes[edge.target_id]
+                        if not active_only or node.status == NodeStatus.ACTIVE:
+                            neighbors.append(node)
         
         if direction in ("incoming", "both"):
             for edge_id in self._edges_by_target.get(node_id, set()):
                 edge = self.edges[edge_id]
                 if relation is None or edge.relation == relation:
                     if edge.source_id in self.nodes:
-                        neighbors.append(self.nodes[edge.source_id])
+                        node = self.nodes[edge.source_id]
+                        if not active_only or node.status == NodeStatus.ACTIVE:
+                            neighbors.append(node)
         
         return neighbors
     
     def get_outgoing_edges(
         self,
         node_id: str,
-        relation: Optional[RelationType] = None
+        relation: Optional[RelationType] = None,
+        active_only: bool = True
     ) -> list[Edge]:
-        """Get all outgoing edges from a node."""
+        """Get all outgoing edges from a node.
+        
+        Args:
+            node_id: The source node ID
+            relation: Optional filter for relation type
+            active_only: Only return edges to active target nodes (default True)
+        """
         edges = []
         for edge_id in self._edges_by_source.get(node_id, set()):
             edge = self.edges[edge_id]
             if relation is None or edge.relation == relation:
+                # Skip edges to inactive target nodes
+                if active_only:
+                    target_node = self.nodes.get(edge.target_id)
+                    if target_node and target_node.status != NodeStatus.ACTIVE:
+                        continue
                 edges.append(edge)
         return edges
     
     def get_incoming_edges(
         self,
         node_id: str,
-        relation: Optional[RelationType] = None
+        relation: Optional[RelationType] = None,
+        active_only: bool = True
     ) -> list[Edge]:
-        """Get all incoming edges to a node."""
+        """Get all incoming edges to a node.
+        
+        Args:
+            node_id: The target node ID
+            relation: Optional filter for relation type
+            active_only: Only return edges from active source nodes (default True)
+        """
         edges = []
         for edge_id in self._edges_by_target.get(node_id, set()):
             edge = self.edges[edge_id]
             if relation is None or edge.relation == relation:
+                # Skip edges from inactive source nodes
+                if active_only:
+                    source_node = self.nodes.get(edge.source_id)
+                    if source_node and source_node.status != NodeStatus.ACTIVE:
+                        continue
                 edges.append(edge)
         return edges
     
@@ -686,7 +723,8 @@ class SemanticGraph:
         start_type: Optional[NodeType] = None,
         relation_path: Optional[list[RelationType]] = None,
         end_type: Optional[NodeType] = None,
-        filters: Optional[dict[str, Any]] = None
+        filters: Optional[dict[str, Any]] = None,
+        active_only: bool = True
     ) -> QueryResult:
         """
         Execute a structured query on the graph.
@@ -696,6 +734,7 @@ class SemanticGraph:
             relation_path: Path of relations to follow
             end_type: Type of ending nodes
             filters: Property filters
+            active_only: Only include active nodes (default True)
             
         Returns:
             QueryResult with matching nodes, edges, and paths
@@ -706,9 +745,11 @@ class SemanticGraph:
         
         # Get starting nodes
         if start_type:
-            start_nodes = self.get_nodes_by_type(start_type)
+            start_nodes = self.get_nodes_by_type(start_type, active_only=active_only)
         else:
             start_nodes = list(self.nodes.values())
+            if active_only:
+                start_nodes = [n for n in start_nodes if n.status == NodeStatus.ACTIVE]
         
         # Apply filters
         if filters:
@@ -728,7 +769,8 @@ class SemanticGraph:
                     result_nodes,
                     result_edges,
                     paths,
-                    end_type
+                    end_type,
+                    active_only
                 )
         else:
             result_nodes = set(n.id for n in start_nodes)
@@ -748,21 +790,29 @@ class SemanticGraph:
         result_nodes: set,
         result_edges: set,
         paths: list,
-        end_type: Optional[NodeType] = None
+        end_type: Optional[NodeType] = None,
+        active_only: bool = True
     ):
         """Recursively traverse a relation path."""
         if depth >= len(relations):
             # Check end type filter
             node = self.nodes.get(current_id)
             if node and (end_type is None or node.type == end_type):
-                result_nodes.add(current_id)
-                paths.append(current_path.copy())
+                # Check if node is active
+                if not active_only or node.status == NodeStatus.ACTIVE:
+                    result_nodes.add(current_id)
+                    paths.append(current_path.copy())
             return
         
         relation = relations[depth]
         for edge_id in self._edges_by_source.get(current_id, set()):
             edge = self.edges[edge_id]
             if edge.relation == relation:
+                # Skip edges to inactive nodes
+                target_node = self.nodes.get(edge.target_id)
+                if active_only and target_node and target_node.status != NodeStatus.ACTIVE:
+                    continue
+                
                 result_edges.add(edge_id)
                 new_path = current_path + [edge.target_id]
                 self._traverse_path(
@@ -773,7 +823,8 @@ class SemanticGraph:
                     result_nodes,
                     result_edges,
                     paths,
-                    end_type
+                    end_type,
+                    active_only
                 )
     
     # ========================================================================
@@ -785,7 +836,8 @@ class SemanticGraph:
         start_id: str,
         end_id: str,
         max_depth: int = 5,
-        relations: Optional[list[RelationType]] = None
+        relations: Optional[list[RelationType]] = None,
+        active_only: bool = True
     ) -> Optional[list[str]]:
         """
         Find a path between two nodes using BFS.
@@ -795,12 +847,20 @@ class SemanticGraph:
             end_id: Ending node ID
             max_depth: Maximum path length
             relations: Optional filter for relation types
+            active_only: Only traverse through active nodes (default True)
             
         Returns:
             List of node IDs in the path, or None if no path found
         """
         if start_id not in self.nodes or end_id not in self.nodes:
             return None
+        
+        # Check if start/end nodes are active
+        start_node = self.nodes[start_id]
+        end_node = self.nodes[end_id]
+        if active_only:
+            if start_node.status != NodeStatus.ACTIVE or end_node.status != NodeStatus.ACTIVE:
+                return None
         
         if start_id == end_id:
             return [start_id]
@@ -822,6 +882,12 @@ class SemanticGraph:
                 
                 next_id = edge.target_id
                 
+                # Skip inactive nodes
+                if active_only:
+                    next_node = self.nodes.get(next_id)
+                    if next_node and next_node.status != NodeStatus.ACTIVE:
+                        continue
+                
                 if next_id == end_id:
                     return path + [next_id]
                 
@@ -835,11 +901,19 @@ class SemanticGraph:
         self,
         start_id: str,
         end_id: str,
-        max_depth: int = 5
+        max_depth: int = 5,
+        active_only: bool = True
     ) -> list[list[str]]:
         """Find all paths between two nodes."""
         if start_id not in self.nodes or end_id not in self.nodes:
             return []
+        
+        # Check if start/end nodes are active
+        start_node = self.nodes[start_id]
+        end_node = self.nodes[end_id]
+        if active_only:
+            if start_node.status != NodeStatus.ACTIVE or end_node.status != NodeStatus.ACTIVE:
+                return []
         
         all_paths = []
         
@@ -855,6 +929,12 @@ class SemanticGraph:
                 edge = self.edges[edge_id]
                 next_id = edge.target_id
                 
+                # Skip inactive nodes
+                if active_only:
+                    next_node = self.nodes.get(next_id)
+                    if next_node and next_node.status != NodeStatus.ACTIVE:
+                        continue
+                
                 if next_id not in visited:
                     visited.add(next_id)
                     path.append(next_id)
@@ -868,7 +948,8 @@ class SemanticGraph:
     def get_subgraph(
         self,
         center_id: str,
-        depth: int = 2
+        depth: int = 2,
+        active_only: bool = True
     ) -> "SemanticGraph":
         """
         Extract a subgraph centered on a node.
@@ -876,6 +957,7 @@ class SemanticGraph:
         Args:
             center_id: Center node ID
             depth: How many hops to include
+            active_only: Only include active nodes (default True)
             
         Returns:
             A new SemanticGraph containing the subgraph
@@ -883,6 +965,11 @@ class SemanticGraph:
         subgraph = SemanticGraph(name=f"{self.name}_subgraph")
         
         if center_id not in self.nodes:
+            return subgraph
+        
+        # Check if center node is active
+        center_node = self.nodes[center_id]
+        if active_only and center_node.status != NodeStatus.ACTIVE:
             return subgraph
         
         visited = set()
@@ -894,8 +981,13 @@ class SemanticGraph:
             if node_id in visited:
                 continue
             
-            visited.add(node_id)
             node = self.nodes[node_id]
+            
+            # Skip inactive nodes
+            if active_only and node.status != NodeStatus.ACTIVE:
+                continue
+            
+            visited.add(node_id)
             
             # Add node to subgraph
             subgraph.nodes[node_id] = Node.from_dict(node.to_dict())
@@ -925,9 +1017,12 @@ class SemanticGraph:
     # Reasoning Operations
     # ========================================================================
     
-    def find_contradictions(self) -> list[tuple[Node, Node, str]]:
+    def find_contradictions(self, active_only: bool = True) -> list[tuple[Node, Node, str]]:
         """
         Find contradictory nodes in the graph.
+        
+        Args:
+            active_only: Only consider active nodes (default True)
         
         Returns:
             List of (node1, node2, explanation) tuples
@@ -940,6 +1035,9 @@ class SemanticGraph:
             source = self.nodes.get(edge.source_id)
             target = self.nodes.get(edge.target_id)
             if source and target:
+                # Skip if either node is inactive
+                if active_only and (source.status != NodeStatus.ACTIVE or target.status != NodeStatus.ACTIVE):
+                    continue
                 contradictions.append((
                     source,
                     target,
@@ -952,6 +1050,9 @@ class SemanticGraph:
             source = self.nodes.get(edge.source_id)
             target = self.nodes.get(edge.target_id)
             if source and target:
+                # Skip if either node is inactive
+                if active_only and (source.status != NodeStatus.ACTIVE or target.status != NodeStatus.ACTIVE):
+                    continue
                 contradictions.append((
                     source,
                     target,
@@ -960,22 +1061,36 @@ class SemanticGraph:
         
         return contradictions
     
-    def infer_relations(self) -> list[Edge]:
+    def infer_relations(self, active_only: bool = True) -> list[Edge]:
         """
         Infer new relations based on existing patterns.
+        
+        Args:
+            active_only: Only consider active nodes for inference (default True)
         
         Returns:
             List of inferred edges (not yet added to graph)
         """
         inferred = []
         
+        def is_node_active(node_id: str) -> bool:
+            """Helper to check if a node is active."""
+            node = self.nodes.get(node_id)
+            return node and (not active_only or node.status == NodeStatus.ACTIVE)
+        
         # Transitivity for IS_A relations
         # If A is_a B and B is_a C, then A is_a C
         for edge1_id in self._edges_by_relation.get(RelationType.IS_A, set()):
             edge1 = self.edges[edge1_id]
+            # Skip if source or target nodes are inactive
+            if not is_node_active(edge1.source_id) or not is_node_active(edge1.target_id):
+                continue
             for edge2_id in self._edges_by_source.get(edge1.target_id, set()):
                 edge2 = self.edges[edge2_id]
                 if edge2.relation == RelationType.IS_A:
+                    # Skip if target node is inactive
+                    if not is_node_active(edge2.target_id):
+                        continue
                     # Check if this edge already exists
                     existing = self.get_edges_between(
                         edge1.source_id,
@@ -995,9 +1110,15 @@ class SemanticGraph:
         # If A causes B and B causes C, A indirectly causes C
         for edge1_id in self._edges_by_relation.get(RelationType.CAUSES, set()):
             edge1 = self.edges[edge1_id]
+            # Skip if source or target nodes are inactive
+            if not is_node_active(edge1.source_id) or not is_node_active(edge1.target_id):
+                continue
             for edge2_id in self._edges_by_source.get(edge1.target_id, set()):
                 edge2 = self.edges[edge2_id]
                 if edge2.relation == RelationType.CAUSES:
+                    # Skip if target node is inactive
+                    if not is_node_active(edge2.target_id):
+                        continue
                     existing = self.get_edges_between(
                         edge1.source_id,
                         edge2.target_id,
@@ -1035,9 +1156,13 @@ class SemanticGraph:
         """Add a custom inference rule."""
         self._inference_rules.append(rule)
     
-    def get_support_chain(self, node_id: str) -> list[tuple[Node, Edge]]:
+    def get_support_chain(self, node_id: str, active_only: bool = True) -> list[tuple[Node, Edge]]:
         """
         Get the chain of evidence supporting a node.
+        
+        Args:
+            node_id: The node ID to get support chain for
+            active_only: Only include active supporting nodes (default True)
         
         Returns:
             List of (supporting_node, edge) tuples
@@ -1060,15 +1185,22 @@ class SemanticGraph:
                 ):
                     source = self.nodes.get(edge.source_id)
                     if source:
+                        # Skip inactive nodes
+                        if active_only and source.status != NodeStatus.ACTIVE:
+                            continue
                         chain.append((source, edge))
                         traverse(edge.source_id)
         
         traverse(node_id)
         return chain
     
-    def calculate_confidence(self, node_id: str) -> float:
+    def calculate_confidence(self, node_id: str, active_only: bool = True) -> float:
         """
         Calculate aggregate confidence for a node based on supporting evidence.
+        
+        Args:
+            node_id: The node ID to calculate confidence for
+            active_only: Only consider active nodes (default True)
         
         Returns:
             Calculated confidence score
@@ -1078,7 +1210,7 @@ class SemanticGraph:
             return 0.0
         
         base_confidence = node.confidence
-        support_chain = self.get_support_chain(node_id)
+        support_chain = self.get_support_chain(node_id, active_only=active_only)
         
         if not support_chain:
             return base_confidence
@@ -1089,13 +1221,16 @@ class SemanticGraph:
             for n, e in support_chain
         ) / len(support_chain)
         
-        # Check for contradictions
+        # Check for contradictions (only from active nodes)
         contradiction_penalty = 0.0
         for edge_id in self._edges_by_target.get(node_id, set()):
             edge = self.edges[edge_id]
             if edge.relation in (RelationType.CONTRADICTS, RelationType.REFUTES):
                 source = self.nodes.get(edge.source_id)
                 if source:
+                    # Skip inactive source nodes
+                    if active_only and source.status != NodeStatus.ACTIVE:
+                        continue
                     contradiction_penalty += source.confidence * 0.5
         
         final_confidence = min(1.0, max(0.0,
@@ -1291,23 +1426,39 @@ class SemanticGraph:
     # Statistics
     # ========================================================================
     
-    def stats(self) -> dict:
-        """Get graph statistics."""
+    def stats(self, active_only: bool = False) -> dict:
+        """Get graph statistics.
+        
+        Args:
+            active_only: If True, only count active nodes (default False for backward compatibility)
+        """
         type_counts = defaultdict(int)
+        status_counts = defaultdict(int)
+        active_nodes = []
+        
         for node in self.nodes.values():
-            type_counts[node.type.value] += 1
+            status_counts[node.status.value] += 1
+            if not active_only or node.status == NodeStatus.ACTIVE:
+                type_counts[node.type.value] += 1
+                active_nodes.append(node)
         
         relation_counts = defaultdict(int)
         for edge in self.edges.values():
             relation_counts[edge.relation.value] += 1
         
-        return {
+        nodes_for_avg = active_nodes if active_only else list(self.nodes.values())
+        
+        result = {
             "total_nodes": len(self.nodes),
+            "active_nodes": status_counts.get("active", 0),
             "total_edges": len(self.edges),
             "nodes_by_type": dict(type_counts),
+            "nodes_by_status": dict(status_counts),
             "edges_by_relation": dict(relation_counts),
-            "avg_confidence": sum(n.confidence for n in self.nodes.values()) / max(1, len(self.nodes))
+            "avg_confidence": sum(n.confidence for n in nodes_for_avg) / max(1, len(nodes_for_avg))
         }
+        
+        return result
     
     def __repr__(self) -> str:
         return f"SemanticGraph(name={self.name}, nodes={len(self.nodes)}, edges={len(self.edges)})"
