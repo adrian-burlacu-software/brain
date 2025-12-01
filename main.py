@@ -1916,7 +1916,7 @@ def main():
             # Process through brain pipeline
             # Use streaming on first request (to detect thinking support) or when thinking is supported
             use_stream = brain.chat._supports_thinking is None or brain.chat._supports_thinking is True
-            print(f"\n{Colors.BOLD}Assistant:{Colors.RESET} ", end="", flush=True)
+            print(f"\n{Colors.BOLD}Brain:{Colors.RESET} ", end="", flush=True)
             print(Colors.GREEN, end="", flush=True)
             for chunk in brain.process(user_input, stream=use_stream):
                 print(chunk, end="", flush=True)

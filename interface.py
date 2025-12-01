@@ -134,7 +134,7 @@ class OllamaChat:
         self._supports_thinking = False
         payload.pop("think", None)
         if self.verbose:
-            print(f"Note: Model '{self.model}' does not support native thinking mode.")
+            print(f"{Colors.DIM}Note: Model '{self.model}' does not support native thinking mode.{Colors.RESET}{Colors.GREEN}")
         return payload
     
     def _stream_response(self, url: str, payload: dict) -> Generator[str, None, None]:
