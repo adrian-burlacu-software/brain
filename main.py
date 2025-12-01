@@ -139,6 +139,9 @@ class EmotionWheel:
         "confident": ("powerful", -10),
         "strong": ("powerful", 0),
         "brave": ("powerful", 10),
+        "desire": ("powerful", 15),  # Desire is a motivated/driven state
+        "motivated": ("powerful", 5),
+        "determined": ("powerful", 20),
         
         # Disgusted family (120°)
         "disapproving": ("disgusted", -15),
@@ -1061,16 +1064,30 @@ class BrainInterface:
             if "intensity:" not in last_part.lower() and "valence:" not in last_part.lower():
                 reason = last_part
         
-        # Use emotion wheel to average the emotions
-        # blend_factor of 0.6 gives slightly more weight to new emotion
-        # This allows emotions to change but with some inertia
-        avg_emotion, avg_intensity = self.emotion_wheel.average_emotions(
-            prev_emotion=prev_emotion,
-            prev_intensity=prev_intensity,
-            new_emotion=new_emotion,
-            new_intensity=new_intensity,
-            blend_factor=0.6
-        )
+        # Determine if the new emotion should "win" or be blended
+        # High intensity new emotions (>= 0.7) should take precedence to break emotion loops
+        # Low intensity secondary emotions blend back toward the primary/core emotion
+        intensity_threshold = 0.7
+        
+        if new_intensity >= intensity_threshold:
+            # Strong new emotion wins - use it directly with slight dampening
+            avg_emotion = new_emotion
+            avg_intensity = new_intensity * 0.95  # Slight dampening to prevent runaway
+        elif new_intensity < 0.4 and prev_intensity >= 0.5:
+            # Weak new emotion with strong previous - revert toward previous/core
+            # This prevents weak secondary emotions from diluting strong states
+            avg_emotion = prev_emotion
+            avg_intensity = prev_intensity * 0.9  # Gradual decay
+        else:
+            # Moderate intensities - use emotion wheel averaging
+            # blend_factor of 0.6 gives slightly more weight to new emotion
+            avg_emotion, avg_intensity = self.emotion_wheel.average_emotions(
+                prev_emotion=prev_emotion,
+                prev_intensity=prev_intensity,
+                new_emotion=new_emotion,
+                new_intensity=new_intensity,
+                blend_factor=0.6
+            )
         
         # Get valence for the averaged emotion
         avg_valence = self.emotion_wheel.get_valence(avg_emotion)
@@ -1761,22 +1778,23 @@ class BrainInterface:
         self._apply_system_prompt()
     
     def _apply_system_prompt(self):
-        """Apply the combined system prompt (main + user custom)."""
+        """Apply the system prompt (user custom overrides main if set)."""
         if hasattr(self, 'user_system_prompt') and self.user_system_prompt:
-            combined = MAIN_SYSTEM_PROMPT + "\n\n" + self.user_system_prompt
+            # User system prompt completely replaces the main prompt
+            self.chat.set_system_prompt(self.user_system_prompt)
         else:
-            combined = MAIN_SYSTEM_PROMPT
-        self.chat.set_system_prompt(combined)
+            self.chat.set_system_prompt(MAIN_SYSTEM_PROMPT)
     
     def set_user_system_prompt(self, prompt: str):
         """
-        Set a custom user system prompt that extends the main system prompt.
+        Set a custom user system prompt that replaces the main system prompt.
         
-        This allows adding custom instructions, personas, or context
-        on top of the core memory-aware system prompt.
+        This allows overriding the default behavior with custom instructions,
+        personas, or context. The main system prompt will not be used when
+        a user system prompt is active.
         
         Args:
-            prompt: Custom system prompt to append to the main prompt
+            prompt: Custom system prompt to use instead of the main prompt
         """
         self.user_system_prompt = prompt
         self._apply_system_prompt()
