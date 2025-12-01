@@ -6,7 +6,7 @@ Vibe coded in my free time :D.
 
 ## Features
 
-- Semantic updates to various knowledge
+- Semantic storage and retrieval for all knowledge
 - Emotional simulation
 - Self generating tools (incoming feature)
 
