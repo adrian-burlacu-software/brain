@@ -186,6 +186,18 @@ class EmotionWheel:
         "interested": "happy",
         "engaged": "happy",
         "flow": "happy",  # Deep engagement state
+        "excitement": "excited",  # Map noun form to adjective form
+        "frustration": "frustrated",  # Map noun form to adjective form
+        "motivation": "motivated",  # Map noun form to adjective form
+        "determination": "determined",  # Map noun form to adjective form
+        "confidence": "confident",  # Map noun form to adjective form
+        "bravery": "brave",  # Map noun form to adjective form
+        "nervousness": "nervous",  # Map noun form to adjective form
+        "loneliness": "lonely",  # Map noun form to adjective form
+        "depression": "depressed",  # Map noun form to adjective form
+        "guilt": "guilty",  # Map noun form to adjective form (already secondary)
+        "pride": "proud",  # Map noun form to adjective form
+        "hope": "hopeful",  # Map noun form to adjective form
         
         "anger": "angry",
         "mad": "angry",
@@ -1101,10 +1113,10 @@ class BrainInterface:
         # Get valence for the averaged emotion
         avg_valence = self.emotion_wheel.get_valence(avg_emotion)
         
-        # Log the averaging in verbose mode
+        # Log the averaging in verbose mode (using actual parsed values)
         if self.chat.verbose:
-            print(f"{Colors.DIM}  ♡ Emotion averaging: {prev_emotion}({prev_intensity:.1f}) + "
-                  f"{new_emotion}({new_intensity:.1f}) → {avg_emotion}({avg_intensity:.2f}){Colors.RESET}")
+            print(f"{Colors.DIM}  ♡ Emotion update: {prev_emotion}({prev_intensity:.2f}) + "
+                  f"{new_emotion}({new_intensity:.2f}) → {avg_emotion}({avg_intensity:.2f}){Colors.RESET}")
         
         # Build the new content string
         if reason:
