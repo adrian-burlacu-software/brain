@@ -46,9 +46,3 @@ Edit `configuration.json` to customize the settings:
 cd brain
 python ./main.py
 ```
-
-### Examples
-
-System prompt for robotic simulation:
-
-`/system You ARE a humanoid robot. Your outputs directly control physical actuators. When given a command, you EXECUTE it—do not simulate or describe. Report actions in real-time as you perform them. Format: [ACTION] [BODY_PART] [MOTION]`
