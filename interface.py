@@ -172,25 +172,22 @@ class OllamaChat:
                             msg = data["message"]
                             
                             # Check for thinking content
-                            if "thinking" in msg and msg["thinking"]:
-                                thinking_chunk = msg.get("thinking", "")
+                            if msg.get("thinking"):
+                                thinking_chunk = msg["thinking"]
                                 thinking_content += thinking_chunk
                                 
                                 if self.verbose:
                                     if not in_thinking:
-                                        yield f"\n{Colors.PINK}{Colors.DIM}"
+                                        yield f"{Colors.RESET}\n{Colors.PINK}{Colors.DIM}"
                                         in_thinking = True
                                     yield thinking_chunk
                             
                             # Regular content
-                            if "content" in msg and msg["content"]:
+                            if msg.get("content"):
                                 # Close thinking section if we were in it
-                                if self.verbose and in_thinking:
+                                if in_thinking:
                                     yield f"{Colors.RESET}\n\n{Colors.GREEN}"
                                     in_thinking = False
-                                elif not in_thinking and not full_response:
-                                    # Start green for response if no thinking shown
-                                    yield f"{Colors.GREEN}"
                                 
                                 chunk = msg["content"]
                                 full_response += chunk
@@ -199,9 +196,6 @@ class OllamaChat:
                         # Check if done
                         if data.get("done", False):
                             break
-            
-            # Reset colors at end
-            yield Colors.RESET
             
             # Add assistant response to history
             self.conversation_history.append({
@@ -388,9 +382,10 @@ def main():
             
             # Send message and stream response
             print(f"\n{Colors.BOLD}Brain:{Colors.RESET} ", end="", flush=True)
+            print(Colors.GREEN, end="", flush=True)
             for chunk in chat.chat(user_input, stream=True):
                 print(chunk, end="", flush=True)
-            print()  # New line after response
+            print(Colors.RESET)  # Reset and new line after response
             
         except KeyboardInterrupt:
             print("\n\nGoodbye!")
