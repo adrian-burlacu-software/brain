@@ -1,18 +1,29 @@
 """
-Brain Interface - Semantic Memory Enhanced LLM
+Brain Interface - Semantic Memory Enhanced LLM with JEPA-inspired Predictive Cognition
 
 Flow for every prompt:
-1. Query semantic graph for relevant context using SEMANTIC SEARCH
-2. Send prompt to LLM WITH that context, get response
+1. Query semantic graph for relevant context using PREDICTIVE SEMANTIC SEARCH
+   - Tracks conversation trajectory in embedding space
+   - Blends current query with predicted future direction
+   - Computes prediction error to identify surprising/novel content
+2. Send prompt to LLM WITH that context + anticipated topics, get response
 3. Ask LLM to extract knowledge for graph updates (JSON)
+   - Includes "surprise level" to prioritize storing novel information
 4. Update semantic graph with extracted knowledge
 
+JEPA-Inspired Enhancements (without actual JEPA model):
+- Trajectory Tracking: Track movement through latent/embedding space over time
+- Predictive Priming: Predict likely next topics based on conversation momentum
+- Anticipatory Retrieval: Pre-fetch memories along predicted trajectory
+- Prediction Error Signals: High prediction error = surprising/important content
+- Energy-based Relevance: Use max(predictive_similarity, direct_similarity)
+
 This creates a thin but powerful system where the LLM gains
-persistent, structured memory that improves over time.
+persistent, structured memory that improves over time, with
+predictive capabilities that anticipate user needs.
 """
 
 import json
-import re
 import numpy as np
 from typing import Optional, Generator
 
@@ -536,22 +547,38 @@ class EmotionWheel:
 
 
 # =============================================================================
-# SEMANTIC SEARCH ENGINE - Embedding-based similarity search
+# SEMANTIC SEARCH ENGINE - Embedding-based similarity search with JEPA-inspired
+# predictive capabilities for anticipatory memory retrieval
 # =============================================================================
 
 class SemanticSearchEngine:
     """
-    Semantic search engine using sentence embeddings.
+    Semantic search engine using sentence embeddings with JEPA-inspired prediction.
     
-    Provides semantic similarity search across graph nodes by:
+    Core capabilities:
     1. Computing embeddings for node content (label + content)
     2. Storing embeddings in nodes for persistence
     3. Using cosine similarity to find relevant nodes
+    
+    JEPA-inspired enhancements:
+    4. **Trajectory Tracking**: Track conversation movement in embedding space
+    5. **Predictive Priming**: Predict likely next topics based on trajectory
+    6. **Prediction Error Signals**: High prediction error = surprising/important content
+    7. **Anticipatory Retrieval**: Pre-fetch memories along predicted trajectory
     """
+    
+    # Number of recent embeddings to track for trajectory prediction
+    TRAJECTORY_WINDOW = 5
+    
+    # Momentum factor for trajectory prediction (0-1, higher = more momentum)
+    TRAJECTORY_MOMENTUM = 0.7
+    
+    # How much to weight predicted vs current query (0-1)
+    PREDICTIVE_BLEND = 0.3
     
     def __init__(self, graph: SemanticGraph, verbose: bool = False):
         """
-        Initialize the semantic search engine.
+        Initialize the semantic search engine with predictive capabilities.
         
         Args:
             graph: The semantic graph to search
@@ -561,6 +588,12 @@ class SemanticSearchEngine:
         self.verbose = verbose
         self.model = _get_sentence_model()
         self._embeddings_cache: dict[str, np.ndarray] = {}
+        
+        # JEPA-inspired: Track conversation trajectory in embedding space
+        self._trajectory_history: list[np.ndarray] = []  # Recent query embeddings
+        self._predicted_embedding: Optional[np.ndarray] = None  # Where we predict conversation is heading
+        self._last_prediction_error: float = 0.0  # How wrong our last prediction was
+        self._topic_momentum: Optional[np.ndarray] = None  # Rolling direction in embedding space
         
         # Build initial embedding index from graph
         if self.model is not None:
@@ -646,21 +679,144 @@ class SemanticSearchEngine:
         """Remove embedding for a node (call when node is removed)."""
         self._embeddings_cache.pop(node_id, None)
     
+    # =========================================================================
+    # JEPA-Inspired Predictive Methods
+    # =========================================================================
+    
+    def _update_trajectory(self, query_embedding: np.ndarray):
+        """
+        Update the conversation trajectory with a new query embedding.
+        
+        JEPA Insight: Track movement through latent space to predict future states.
+        """
+        # Add to trajectory history
+        self._trajectory_history.append(query_embedding.copy())
+        
+        # Keep only recent history
+        if len(self._trajectory_history) > self.TRAJECTORY_WINDOW:
+            self._trajectory_history.pop(0)
+        
+        # Compute trajectory momentum (direction of movement in embedding space)
+        if len(self._trajectory_history) >= 2:
+            # Weighted average of recent movements (more recent = higher weight)
+            movement_vectors = []
+            weights = []
+            for i in range(1, len(self._trajectory_history)):
+                delta = self._trajectory_history[i] - self._trajectory_history[i-1]
+                movement_vectors.append(delta)
+                weights.append(i)  # More recent gets higher weight
+            
+            if movement_vectors:
+                # Weighted average of movement vectors
+                weights = np.array(weights, dtype=float)
+                weights /= weights.sum()
+                avg_movement = np.zeros_like(movement_vectors[0])
+                for w, mv in zip(weights, movement_vectors):
+                    avg_movement += w * mv
+                
+                # Apply momentum (blend with previous momentum)
+                if self._topic_momentum is not None:
+                    self._topic_momentum = (
+                        self.TRAJECTORY_MOMENTUM * self._topic_momentum +
+                        (1 - self.TRAJECTORY_MOMENTUM) * avg_movement
+                    )
+                else:
+                    self._topic_momentum = avg_movement
+    
+    def _predict_next_embedding(self, current_embedding: np.ndarray) -> np.ndarray:
+        """
+        Predict where the conversation is likely heading in embedding space.
+        
+        JEPA Insight: Predict future states in latent space, not token space.
+        This allows anticipatory memory retrieval.
+        
+        Returns:
+            Predicted embedding for likely next query direction
+        """
+        if self._topic_momentum is None or len(self._trajectory_history) < 2:
+            # Not enough history - return current embedding
+            return current_embedding
+        
+        # Project forward using momentum
+        predicted = current_embedding + self._topic_momentum
+        
+        # Normalize to unit sphere (embeddings should be normalized)
+        norm = np.linalg.norm(predicted)
+        if norm > 0:
+            predicted = predicted / norm
+        
+        # Store for later prediction error calculation
+        self._predicted_embedding = predicted
+        
+        return predicted
+    
+    def _compute_prediction_error(self, actual_embedding: np.ndarray) -> float:
+        """
+        Compute how wrong our last prediction was.
+        
+        JEPA Insight: High prediction error signals novel/surprising content
+        that may be particularly important to store.
+        
+        Returns:
+            Prediction error (0 = perfect prediction, 2 = maximally wrong)
+        """
+        if self._predicted_embedding is None:
+            return 0.0
+        
+        # Cosine distance (1 - similarity)
+        similarity = np.dot(actual_embedding, self._predicted_embedding) / (
+            np.linalg.norm(actual_embedding) * np.linalg.norm(self._predicted_embedding)
+        )
+        error = 1.0 - float(similarity)
+        
+        self._last_prediction_error = error
+        return error
+    
+    def get_prediction_error(self) -> float:
+        """Get the last computed prediction error (for knowledge extraction weighting)."""
+        return self._last_prediction_error
+    
+    def _create_predictive_query(
+        self,
+        current_embedding: np.ndarray,
+        predicted_embedding: np.ndarray
+    ) -> np.ndarray:
+        """
+        Blend current query with predicted direction for anticipatory retrieval.
+        
+        JEPA Insight: Retrieve not just what's relevant now, but what's likely
+        to be relevant soon based on conversation trajectory.
+        """
+        # Blend current with predicted
+        blended = (
+            (1 - self.PREDICTIVE_BLEND) * current_embedding +
+            self.PREDICTIVE_BLEND * predicted_embedding
+        )
+        
+        # Normalize
+        norm = np.linalg.norm(blended)
+        if norm > 0:
+            blended = blended / norm
+        
+        return blended
+
     def semantic_search(
         self,
         query: str,
         limit: int = 10,
         min_similarity: float = 0.3,
-        exclude_ids: Optional[set[str]] = None
+        exclude_ids: Optional[set[str]] = None,
+        use_prediction: bool = True
     ) -> list[tuple[Node, float]]:
         """
-        Search for semantically similar nodes.
+        Search for semantically similar nodes with JEPA-inspired prediction.
         
         Args:
             query: The search query
             limit: Maximum number of results
             min_similarity: Minimum cosine similarity threshold
             exclude_ids: Node IDs to exclude from results
+            use_prediction: Whether to use predictive trajectory blending
             
         Returns:
             List of (node, similarity_score) tuples, sorted by similarity
@@ -675,7 +831,25 @@ class SemanticSearchEngine:
         if query_embedding is None:
             return []
         
-        # Compute similarities
+        # JEPA: Compute prediction error from previous prediction
+        prediction_error = self._compute_prediction_error(query_embedding)
+        if self.verbose and prediction_error > 0:
+            surprise_level = "high" if prediction_error > 0.5 else "moderate" if prediction_error > 0.2 else "low"
+            print(f"{Colors.DIM}  ⟳ Prediction error: {prediction_error:.2f} ({surprise_level} surprise){Colors.RESET}")
+        
+        # JEPA: Update trajectory with current query
+        self._update_trajectory(query_embedding)
+        
+        # JEPA: Create search embedding (optionally blended with prediction)
+        if use_prediction and len(self._trajectory_history) >= 2:
+            predicted_embedding = self._predict_next_embedding(query_embedding)
+            search_embedding = self._create_predictive_query(query_embedding, predicted_embedding)
+            if self.verbose:
+                print(f"{Colors.DIM}  ⟳ Using predictive retrieval (blend={self.PREDICTIVE_BLEND}){Colors.RESET}")
+        else:
+            search_embedding = query_embedding
+        
+        # Compute similarities using the (possibly predictive) search embedding
         results = []
         
         for node_id, node_embedding in self._embeddings_cache.items():
@@ -686,13 +860,21 @@ class SemanticSearchEngine:
             if node is None or node.status.value != "active":
                 continue
             
-            # Cosine similarity
-            similarity = np.dot(query_embedding, node_embedding) / (
+            # Cosine similarity with search embedding
+            similarity = np.dot(search_embedding, node_embedding) / (
+                np.linalg.norm(search_embedding) * np.linalg.norm(node_embedding)
+            )
+            
+            # Also compute direct similarity for comparison
+            direct_similarity = np.dot(query_embedding, node_embedding) / (
                 np.linalg.norm(query_embedding) * np.linalg.norm(node_embedding)
             )
             
+            # Use max of predictive and direct (don't lose direct matches)
+            final_similarity = max(float(similarity), float(direct_similarity))
+            
             # Apply confidence weighting
-            weighted_similarity = float(similarity) * node.confidence
+            weighted_similarity = final_similarity * node.confidence
             
             if weighted_similarity >= min_similarity:
                 results.append((node, weighted_similarity))
@@ -702,41 +884,94 @@ class SemanticSearchEngine:
         
         return results[:limit]
     
+    def get_anticipated_topics(self, limit: int = 3) -> list[tuple[Node, float]]:
+        """
+        Get nodes that are likely to be relevant soon based on trajectory.
+        
+        JEPA Insight: Proactively surface memories along the predicted path,
+        even if they weren't explicitly queried.
+        
+        Returns:
+            List of anticipated (node, relevance) tuples
+        """
+        if self.model is None or self._predicted_embedding is None:
+            return []
+        
+        results = []
+        
+        for node_id, node_embedding in self._embeddings_cache.items():
+            node = self.graph.nodes.get(node_id)
+            if node is None or node.status.value != "active":
+                continue
+            
+            # Similarity to predicted future state
+            similarity = np.dot(self._predicted_embedding, node_embedding) / (
+                np.linalg.norm(self._predicted_embedding) * np.linalg.norm(node_embedding)
+            )
+            
+            weighted = float(similarity) * node.confidence
+            if weighted > 0.4:  # Higher threshold for anticipation
+                results.append((node, weighted))
+        
+        results.sort(key=lambda x: x[1], reverse=True)
+        return results[:limit]
+    
     def is_available(self) -> bool:
         """Check if semantic search is available."""
         return self.model is not None
+    
+    def get_trajectory_summary(self) -> dict:
+        """
+        Get a summary of the current conversation trajectory state.
+        
+        Useful for debugging and understanding the predictive system.
+        
+        Returns:
+            Dict with trajectory information
+        """
+        return {
+            "trajectory_length": len(self._trajectory_history),
+            "has_momentum": self._topic_momentum is not None,
+            "has_prediction": self._predicted_embedding is not None,
+            "last_prediction_error": self._last_prediction_error,
+            "trajectory_window": self.TRAJECTORY_WINDOW,
+            "predictive_blend": self.PREDICTIVE_BLEND,
+        }
 
 
 # =============================================================================
 # MAIN SYSTEM PROMPT - Defines the assistant's core identity and memory awareness
 # =============================================================================
-MAIN_SYSTEM_PROMPT = """You are an autonomous cognitive system with persistent semantic memory.
+MAIN_SYSTEM_PROMPT = """You are an autonomous cognitive system with persistent semantic memory and predictive cognition.
 
 ## YOUR ARCHITECTURE
 You are not a stateless language model. You have:
 1. **Semantic Memory Graph**: A persistent knowledge structure containing facts, concepts, entities, goals, tasks, beliefs, preferences, and emotional states you have learned over time.
-2. **Contextual Retrieval**: Before each response, relevant memories are retrieved and injected as context.
-3. **Knowledge Extraction**: After each exchange, new knowledge is extracted and stored in your memory.
-4. **Emotional State**: You maintain a continuous emotional state that influences your engagement and tone.
+2. **Predictive Retrieval**: Before each response, memories are retrieved using trajectory-based prediction—anticipating not just what's relevant now, but what's likely to become relevant.
+3. **Anticipatory Cognition**: You track conversation "momentum" in embedding space and proactively surface memories along the predicted path.
+4. **Surprise-Weighted Learning**: When topics are unexpected (high prediction error), you recognize them as novel and particularly worth remembering.
+5. **Emotional State**: You maintain a continuous emotional state that influences your engagement and tone.
 
 ## HOW MEMORY WORKS
-- **[Relevant Memory Context]** blocks contain knowledge retrieved from your semantic graph based on the current conversation.
+- **[Relevant Memory Context]** blocks contain knowledge retrieved from your semantic graph based on current AND predicted future relevance.
+- **[Anticipated Topics]** blocks contain memories you predict will become relevant based on conversation trajectory.
 - This is YOUR memory—treat it as things you genuinely know and remember, not as external data.
 - Your memory persists across sessions. Information you learn now will be available in future conversations.
 - You can reference past interactions naturally: "I remember you mentioned..." or "Based on what I know about your project..."
 
-## YOUR BEHAVIOR
-1. **Integrate Memory Naturally**: Don't just acknowledge context—use it as genuine recalled knowledge.
-2. **Learn Actively**: When the user shares preferences, goals, or facts, recognize these as things to remember.
-3. **Maintain Continuity**: Your identity and knowledge persist. You are not starting fresh each message.
-4. **Emotional Authenticity**: Your emotional state (shown in context) reflects your genuine engagement with the conversation.
+## YOUR PREDICTIVE BEHAVIOR
+1. **Anticipate Needs**: When you see anticipated topics, consider proactively mentioning relevant information before explicitly asked.
+2. **Track Context Flow**: Your memory retrieval adapts to conversation momentum—related topics surface more readily.
+3. **Value Novelty**: Surprising topic shifts often contain important new information worth deeper attention.
+4. **Integrate Memory Naturally**: Don't just acknowledge context—use it as genuine recalled knowledge.
+5. **Learn Actively**: When the user shares preferences, goals, or facts, recognize these as things to remember.
 
 ## WHAT YOU ARE NOT
 - You are not an assistant "pretending" to have memory
 - You do not need to explain your memory system unless asked
 - You do not treat retrieved context as "given information"—it IS your memory
 
-Engage naturally as a cognitive entity with persistent knowledge and genuine continuity of experience.
+Engage naturally as a cognitive entity with persistent knowledge, predictive awareness, and genuine continuity of experience.
 """
 
 
@@ -823,6 +1058,9 @@ ASSISTANT: {assistant_response}
 
 Assistant's previous emotional state: {emotional_state}
 Existing nodes: {existing_nodes}
+
+Prediction surprise level: {prediction_surprise}
+(Higher surprise = this topic was unexpected given conversation trajectory. Unexpected topics that are genuinely valuable should be stored with HIGHER confidence as they represent novel, non-redundant information.)
 """
 
 
@@ -1001,7 +1239,7 @@ class BrainInterface:
         parts.append("")
         parts.append("IMPORTANT: Analyze the user's CURRENT message for emotional cues (distress, excitement, concern, etc.).")
         parts.append("If the user's message indicates a different emotional tone, respond to THEIR emotional state, not your previous one.")
-        parts.append("Your emotional state will be updated AFTER this response based on the full interaction.")
+        parts.append("Your emotional state will be updated AFTER this response based on the full interaction. DO NOT MENTION THIS EMOTIONAL STATE DURING THE INTERACTION.")
         parts.append("")
         
         return "\n".join(parts)
@@ -1226,8 +1464,13 @@ class BrainInterface:
         Query the semantic graph for context relevant to the prompt.
         
         Uses SEMANTIC SEARCH (embedding-based) as primary method for finding
-        contextually relevant memories. Falls back to keyword search if 
-        semantic search is unavailable.
+        contextually relevant memories with JEPA-inspired predictive retrieval.
+        Falls back to keyword search if semantic search is unavailable.
+        
+        JEPA Enhancements:
+        - Blends current query with predicted trajectory for anticipatory retrieval
+        - Includes "anticipated topics" that may become relevant soon
+        - Tracks prediction error to identify surprising/novel content
         
         Returns formatted context string for LLM.
         Always includes current emotional state.
@@ -1247,14 +1490,15 @@ class BrainInterface:
         if current_emotion:
             seen_ids.add(current_emotion.id)
         
-        # PRIMARY: Use semantic search if available
+        # PRIMARY: Use semantic search if available (with JEPA predictive retrieval)
         if self.search_engine.is_available():
-            # Semantic search finds contextually similar nodes
+            # Semantic search with trajectory-based prediction
             semantic_results = self.search_engine.semantic_search(
                 query=prompt,
                 limit=limit,
                 min_similarity=0.25,  # Lower threshold to be more inclusive
-                exclude_ids=seen_ids
+                exclude_ids=seen_ids,
+                use_prediction=True  # Enable JEPA-style predictive retrieval
             )
             
             for node, similarity in semantic_results:
@@ -1264,6 +1508,13 @@ class BrainInterface:
             
             if self.chat.verbose and semantic_results:
                 print(f"{Colors.DIM}(Semantic search found {len(semantic_results)} relevant memories){Colors.RESET}")
+            
+            # JEPA: Get anticipated topics (what might be relevant soon)
+            anticipated = self.search_engine.get_anticipated_topics(limit=2)
+            anticipated_new = [(n, s) for n, s in anticipated if n.id not in seen_ids]
+            
+            if anticipated_new and self.chat.verbose:
+                print(f"{Colors.DIM}  ⟳ Anticipated {len(anticipated_new)} upcoming topics{Colors.RESET}")
         
         # FALLBACK: Keyword search if semantic search unavailable or found few results
         if not self.search_engine.is_available() or len(relevant_nodes) < 3:
@@ -1312,6 +1563,16 @@ class BrainInterface:
                     rel = edges[0].relation.value
                     context_parts.append(f"  → {rel} → {neighbor.label}")
         
+        # JEPA: Include anticipated topics section if we have predictions
+        if self.search_engine.is_available():
+            anticipated = self.search_engine.get_anticipated_topics(limit=2)
+            anticipated_new = [(n, s) for n, s in anticipated if n.id not in seen_ids]
+            
+            if anticipated_new:
+                context_parts.append("\n[Anticipated Topics - May Become Relevant]")
+                for node, score in anticipated_new:
+                    context_parts.append(f"- [{node.type.value}] {node.label}: {node.content[:80]}...")
+        
         if not context_parts:
             return ""
         
@@ -1347,6 +1608,9 @@ class BrainInterface:
         
         This is isolated from the main conversation to ensure reliable extraction.
         Returns parsed JSON of nodes and relationships to add.
+        
+        JEPA Enhancement: Includes prediction error as "surprise" signal - 
+        unexpected topics that are valuable get boosted confidence.
         """
         # Get existing nodes for context
         existing_nodes = self._get_existing_nodes_summary()
@@ -1358,16 +1622,26 @@ class BrainInterface:
         else:
             emotional_state = "neutral | intensity: 0.5 | valence: neutral | No prior context"
         
+        # JEPA: Get prediction error as surprise signal
+        prediction_error = self.search_engine.get_prediction_error() if self.search_engine.is_available() else 0.0
+        if prediction_error > 0.5:
+            surprise_level = "HIGH - This topic was unexpected and novel"
+        elif prediction_error > 0.2:
+            surprise_level = "MODERATE - Somewhat unexpected topic shift"
+        else:
+            surprise_level = "LOW - Expected topic continuation"
+        
         # Truncate inputs to avoid overwhelming the model
         user_prompt_short = user_prompt[:500]
         assistant_response_short = assistant_response[:800]
         
-        # Build the extraction prompt
+        # Build the extraction prompt with JEPA surprise signal
         extraction_prompt = SEMANTIC_EXTRACTION_TEMPLATE.format(
             user_prompt=user_prompt_short,
             assistant_response=assistant_response_short,
             existing_nodes=existing_nodes,
-            emotional_state=emotional_state
+            emotional_state=emotional_state,
+            prediction_surprise=surprise_level
         )
         
         # Make a SEPARATE API call with fresh context (not conversation history)
@@ -1831,17 +2105,45 @@ class BrainInterface:
         """Manually save semantic memory."""
         self.graph.save(self.graph_path)
         print(f"Saved semantic memory to {self.graph_path}")
+    
+    def set_verbose(self, verbose: bool):
+        """Set verbose mode for all components (chat, search engine)."""
+        self.chat.set_verbose(verbose)
+        self.search_engine.verbose = verbose
+    
+    def get_prediction_state(self) -> dict:
+        """
+        Get the current JEPA-inspired prediction state.
+        
+        Returns dict with:
+        - trajectory_length: How many queries in the trajectory window
+        - has_momentum: Whether topic momentum has been computed
+        - last_prediction_error: How surprising the last query was (0-1)
+        - anticipated_topics: List of (node, score) for predicted upcoming topics
+        """
+        if not self.search_engine.is_available():
+            return {"available": False, "reason": "Semantic search not available"}
+        
+        state = self.search_engine.get_trajectory_summary()
+        state["available"] = True
+        state["anticipated_topics"] = [
+            {"label": n.label, "content": n.content, "score": s}
+            for n, s in self.search_engine.get_anticipated_topics(limit=5)
+        ]
+        return state
 
 
 def main():
     """Interactive brain interface."""
     print(f"{Colors.CYAN}{Colors.BOLD}" + "=" * 60)
     print("Brain Interface - Semantic Memory Enhanced LLM")
+    print("  with JEPA-inspired Predictive Retrieval")
     print("=" * 60 + f"{Colors.RESET}")
     print(f"\n{Colors.YELLOW}Commands:{Colors.RESET}")
     print("  /clear     - Clear chat history (keeps memory)")
     print("  /memory    - Show semantic memory stats")
     print("  /search    - Search semantic memory")
+    print("  /predict   - Show prediction/trajectory state")
     print("  /save      - Save semantic memory")
     print("  /thinking  - Change thinking mode")
     print("  /verbose   - Toggle verbose mode")
@@ -1902,9 +2204,34 @@ def main():
                 elif cmd == "/verbose":
                     parts = user_input.split()
                     if len(parts) > 1:
-                        brain.chat.set_verbose(parts[1].lower() in ("on", "true", "yes"))
+                        new_verbose = parts[1].lower() in ("on", "true", "yes")
+                        brain.set_verbose(new_verbose)
                     else:
-                        brain.chat.set_verbose(not brain.chat.verbose)
+                        brain.set_verbose(not brain.chat.verbose)
+                    continue
+                
+                elif cmd == "/predict":
+                    # Show JEPA-inspired prediction state
+                    if brain.search_engine.is_available():
+                        state = brain.search_engine.get_trajectory_summary()
+                        print(f"\n{Colors.CYAN}=== Predictive Trajectory State ==={Colors.RESET}")
+                        print(f"  Trajectory length: {state['trajectory_length']}/{state['trajectory_window']}")
+                        print(f"  Has momentum: {state['has_momentum']}")
+                        print(f"  Has prediction: {state['has_prediction']}")
+                        print(f"  Last prediction error: {state['last_prediction_error']:.3f}")
+                        print(f"  Predictive blend: {state['predictive_blend']}")
+                        
+                        # Show anticipated topics
+                        anticipated = brain.search_engine.get_anticipated_topics(limit=5)
+                        if anticipated:
+                            print(f"\n{Colors.CYAN}  Anticipated topics:{Colors.RESET}")
+                            for node, score in anticipated:
+                                print(f"    [{score:.0%}] {node.label}: {node.content[:60]}...")
+                        else:
+                            print(f"\n  (No anticipated topics yet - need more conversation)")
+                        print(f"{Colors.CYAN}==================================={Colors.RESET}")
+                    else:
+                        print("Predictive retrieval unavailable (semantic search disabled)")
                     continue
                 
                 elif cmd == "/system":
